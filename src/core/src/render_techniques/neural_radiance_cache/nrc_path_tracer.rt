@@ -1,0 +1,88 @@
+#define USE_INLINE_RT 1
+#include "nrc_path_tracer.comp"
+#include "nrc_path_tracing.hlsl"
+
+TriangleHitGroup NRCHitGroup =
+{
+    "NRCPTAnyHit", 
+    "NRCPTClosestHit", 
+};
+
+TriangleHitGroup NRCShadowHitGroup =
+{
+    "NRCPTShadowAnyHit", 
+    "", 
+};
+
+
+[shader("raygeneration")]
+void NRCPTRaygen()
+{
+    uint2 did = DispatchRaysIndex().xy;
+    uint2 dimensions = g_BufferDimensions;
+    
+    // Check if valid pixel
+    if (any(did >= dimensions)) return;
+
+    // Standard camera ray generation
+    const uint id = did.x + did.y * dimensions.x;
+    const uint frameID = g_FrameIndex;
+    Random randomNG = MakeRandom(id, frameID);
+    
+    // Stratified sampling
+    StratifiedSampler randomStratified = MakeStratifiedSampler(id, frameID);
+    
+    // Ray
+    float2 pixelRay = float2(did) + 0.5f;
+    RayInfo ray = generateCameraRay(pixelRay, g_RayCamera);
+
+    float3 radiance = 0.0f;
+    
+    // Training Ray Check: 1 in N pixels? Or random?
+    // Let's do 1% of rays are training rays.
+    bool isTraining = (randomNG.rand() < 0.01f);
+
+    tracePathNRC(ray, randomStratified, randomNG, 0, g_BounceRRCount, g_BounceCount, 0.0f.xxx, 1.0f.xxx, radiance, isTraining, did);
+
+    // Accumulate Primary/Direct (whatever tracePathNRC gathered before quitting)
+    if (g_Accumulate != 0)
+    {
+         float4 accumulator = g_AccumulationBuffer[did];
+         uint previousCount = asuint(accumulator.w);
+         uint sampleCount = previousCount + 1;
+         radiance = accumulator.xyz + ((radiance - accumulator.xyz) / (float)sampleCount);
+         g_AccumulationBuffer[did] = float4(radiance, asfloat(sampleCount));
+    }
+    else
+    {
+         g_AccumulationBuffer[did] = float4(radiance, 1.0f);
+    }
+    
+    g_OutputBuffer[did] = float4(radiance, 1.0f);
+}
+
+[shader("miss")]
+void NRCPTMiss(inout PathData path)
+{
+    pathMiss(path);
+}
+
+[shader("anyhit")]
+void NRCPTAnyHit(inout PathData path, in BuiltInTriangleIntersectionAttributes attr)
+{
+    pathAnyHit(attr);
+}
+
+[shader("closesthit")]
+void NRCPTClosestHit(inout PathData path, in BuiltInTriangleIntersectionAttributes attr)
+{
+    const uint minBounces = g_BounceRRCount; 
+    const uint maxBounces = g_BounceCount;
+    pathClosestHit(path, attr, minBounces, maxBounces);
+}
+
+// Shadow shaders
+[shader("miss")]
+void NRCPTShadowMiss(inout ShadowRayPayload payload) { payload.visible = true; }
+[shader("anyhit")]
+void NRCPTShadowAnyHit(inout ShadowRayPayload payload, in BuiltInTriangleIntersectionAttributes attr) { pathShadowAnyHit(attr); }

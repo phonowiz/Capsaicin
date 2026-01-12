@@ -1,0 +1,90 @@
+/**********************************************************************
+Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+********************************************************************/
+
+#include "nrc_common.hlsl"
+
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+
+RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
+StructuredBuffer<TrainingSample> g_TrainingSamples : register(t1);
+
+RWStructuredBuffer<NrcFloat> g_Gradients : register(u2);
+RWStructuredBuffer<NrcFloat> g_Momentum1 : register(u3);
+RWStructuredBuffer<NrcFloat> g_Momentum2 : register(u4);
+
+StructuredBuffer<uint> g_Counters : register(t2);
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void NRCTrain(uint3 dtid : SV_DispatchThreadID)
+{
+    uint count = g_Counters[1];
+    if (dtid.x >= count)
+        return;
+    
+    TrainingSample sample = g_TrainingSamples[dtid.x];
+    
+     // Forward Pass
+    NrcFloat layer_activations[HIDDEN_LAYERS + 1][NETWORK_WIDTH];
+    
+    EncodeInputTraining(sample, layer_activations[0]);
+    
+    for (int layer = 0; layer < HIDDEN_LAYERS; ++layer)
+    {
+        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
+         
+        for (int r = 0; r < NETWORK_WIDTH; ++r)
+        {
+            NrcFloat sum = 0.0f;
+            for (int c = 0; c < NETWORK_WIDTH; ++c)
+            {
+                sum += layer_activations[layer][c] * g_Weights[weight_offset + r * NETWORK_WIDTH + c];
+            }
+            layer_activations[layer + 1][r] = max(0.0f, sum); // ReLU
+        }
+    }
+    
+    float3 prediction = float3(layer_activations[HIDDEN_LAYERS][0], layer_activations[HIDDEN_LAYERS][1], layer_activations[HIDDEN_LAYERS][2]);
+    float3 target = sample.target_radiance;
+    
+    float3 dL_dPred = prediction - target;
+    
+     // Backprop
+    NrcFloat dL_dX[NETWORK_WIDTH];
+    
+    for (int i = 0; i < NETWORK_WIDTH; ++i)
+        dL_dX[i] = 0.0f;
+    dL_dX[0] = dL_dPred.x;
+    dL_dX[1] = dL_dPred.y;
+    dL_dX[2] = dL_dPred.z;
+    
+    for (int layer = HIDDEN_LAYERS - 1; layer >= 0; --layer)
+    {
+        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
+        NrcFloat dL_dX_prev[NETWORK_WIDTH];
+        for (int k = 0; k < NETWORK_WIDTH; ++k)
+            dL_dX_prev[k] = 0.0f;
+         
+        for (int r = 0; r < NETWORK_WIDTH; ++r)
+        {
+            NrcFloat output_val = layer_activations[layer + 1][r];
+            NrcFloat grad = (output_val > 0.0f) ? dL_dX[r] : 0.0f;
+             
+              // Gradients w/ Atomics (Placeholder / Performance Warning)
+            for (int c = 0; c < NETWORK_WIDTH; ++c)
+            {
+                NrcFloat w_grad = grad * layer_activations[layer][c];
+                int w_idx = weight_offset + r * NETWORK_WIDTH + c;
+                  // See notes on atomics
+            }
+             
+            for (int c = 0; c < NETWORK_WIDTH; ++c)
+            {
+                dL_dX_prev[c] += grad * g_Weights[weight_offset + r * NETWORK_WIDTH + c];
+            }
+        }
+         
+        for (int k = 0; k < NETWORK_WIDTH; ++k)
+            dL_dX[k] = dL_dX_prev[k];
+    }
+}

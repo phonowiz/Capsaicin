@@ -1,0 +1,80 @@
+/**********************************************************************
+Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+********************************************************************/
+
+#include "nrc_common.hlsl"
+
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+
+RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
+StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
+RWTexture2D<float4> g_OutputTexture : register(u1);
+RWTexture2D<float4> g_AccumulationBuffer : register(u5);
+StructuredBuffer<uint> g_Counters : register(t2);
+
+groupshared NrcFloat s_LayerWeights[NETWORK_WIDTH * NETWORK_WIDTH];
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    uint count = g_Counters[0];
+    if (dtid.x >= count)
+        return;
+
+    InferenceQuery query = g_InferenceQueries[dtid.x];
+    
+    // 1. Encode
+    NrcFloat activations[NETWORK_WIDTH];
+    EncodeInput(query, activations);
+    
+    // 2. Run Layers
+    for (int layer = 0; layer < HIDDEN_LAYERS + 2; ++layer)
+    {
+        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
+        
+        for (int i = 0; i < 32; ++i)
+        {
+            int idx = i * GROUP_SIZE + gtid.x;
+            if (idx < NETWORK_WIDTH * NETWORK_WIDTH)
+            {
+                s_LayerWeights[idx] = g_Weights[weight_offset + idx];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        
+        NrcFloat next_activations[NETWORK_WIDTH];
+        
+        for (int out_row = 0; out_row < NETWORK_WIDTH; ++out_row)
+        {
+            NrcFloat sum = 0.0f;
+            for (int in_col = 0; in_col < NETWORK_WIDTH; ++in_col)
+            {
+                sum += activations[in_col] * s_LayerWeights[out_row * NETWORK_WIDTH + in_col];
+            }
+            
+            if (layer < HIDDEN_LAYERS)
+                next_activations[out_row] = max(0.0f, sum);
+            else
+                next_activations[out_row] = sum;
+        }
+        
+        activations = next_activations;
+        
+        GroupMemoryBarrierWithGroupSync();
+    }
+    
+    // 3. Output
+    float3 radiance = float3(activations[0], activations[1], activations[2]);
+    radiance = max(0.0f, radiance);
+    
+    float3 final_color = radiance * (query.albedo + 0.001f);
+    
+    float4 acc = g_AccumulationBuffer[query.pixel_coord];
+    float3 current_radiance = acc.xyz;
+    uint sample_count = asuint(acc.w);
+    
+    if (sample_count > 0)
+        g_AccumulationBuffer[query.pixel_coord] = float4(current_radiance + (final_color * query.throughput / (float) sample_count), asfloat(sample_count));
+    
+    g_OutputTexture[query.pixel_coord] = float4(final_color, 1.0f);
+}
