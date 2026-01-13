@@ -14,6 +14,17 @@ TriangleHitGroup NRCShadowHitGroup =
     "", 
 };
 
+RaytracingShaderConfig NRCShaderConfig =
+{
+    sizeof(PathData), // max payload size
+    sizeof(BuiltInTriangleIntersectionAttributes) // max attribute size
+};
+
+RaytracingPipelineConfig NRCPipelineConfig =
+{
+    2 // max trace recursion depth
+};
+
 
 [shader("raygeneration")]
 void NRCPTRaygen()

@@ -33,7 +33,11 @@ RWStructuredBuffer<uint> g_Counters : register(u7); // [0]=Queries, [1]=Samples
 // I will include path_tracing.hlsl but use the preprocessor to rename or I'll just use the functions it provides and write a new top-level function.
 // 'tracePath' is the main one. I'll write 'tracePathNRC'.
 
-#include "../../ray_tracing/path_tracing.hlsl"
+// Include Light Sampler (required for sampleLightsPDF used in path_tracing.hlsl)
+#include "../../components/light_sampler/light_sampler.hlsl"
+
+// Helper to include standard RT functions (pathMiss, pathClosestHit etc)
+#include "../../ray_tracing/path_tracing_rt.hlsl"
 
 template<typename RadianceT>
 void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout Random randomNG,
@@ -45,7 +49,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 
     // State for training
     TrainingSample trainingSample; 
+    trainingSample.pos = 0.0f.xxx;
+    trainingSample.dir = 0.0f.xxx;
+    trainingSample.normal = 0.0f.xxx;
+    trainingSample.roughness = 0.0f;
+    trainingSample.target_radiance = 0.0f.xxx;
     bool trainingVertexFound = false;
+    float3 radianceAtCachePoint = 0.0f.xxx;
+    float3 throughputAtCachePoint = 1.0f.xxx;
 
     // Standard Path Tracing Loop
     for (uint bounce = currentBounce; bounce <= maxBounces; ++bounce)
@@ -103,7 +114,8 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                  trainingSample.normal = iData.normal;
                  trainingSample.roughness = 0.5f;
                  trainingVertexFound = true;
-                 
+                 radianceAtCachePoint = radiance;
+                 throughputAtCachePoint = throughput;
                  // We continue tracing to gather the "Target Radiance"
              }
              
@@ -126,7 +138,8 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
         InterlockedAdd(g_Counters[1], 1, sampleIdx);
         if (sampleIdx < 4096) 
         {
-             // Training logic...
+             // Target radiance is the suffix: (Final - AtBounce) / ThroughputAtBounce
+             trainingSample.target_radiance = (radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f);
              g_TrainingSamples_RT[sampleIdx] = trainingSample;
         }
     }

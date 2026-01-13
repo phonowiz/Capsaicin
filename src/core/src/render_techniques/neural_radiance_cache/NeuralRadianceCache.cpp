@@ -114,7 +114,7 @@ bool NeuralRadianceCache::initKernels(CapsaicinInternal const &capsaicin) noexce
     
     // Init RT
     // Need setupRTKernel equivalent
-     std::vector<char const *> exports;
+    std::vector<char const *> exports;
     std::vector<char const *> subobjects;
     std::vector<std::string>  defines_str;
     std::vector<std::string>  exports_str;
@@ -287,6 +287,8 @@ void NeuralRadianceCache::setupRTKernel([[maybe_unused]] CapsaicinInternal const
     exports.emplace_back("NRCPTClosestHit");
     exports.emplace_back("NRCPTShadowAnyHit");
 
+    subobjects.emplace_back("NRCShaderConfig");
+    subobjects.emplace_back("NRCPipelineConfig");
     subobjects.emplace_back("NRCHitGroup");
     subobjects.emplace_back("NRCShadowHitGroup");
 }
