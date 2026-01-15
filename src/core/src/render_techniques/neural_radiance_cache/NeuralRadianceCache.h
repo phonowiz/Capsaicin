@@ -52,6 +52,7 @@ private:
     GfxKernel  update_weights_kernel_; // Optional if integrated into train
 
     GfxTexture output_texture_; // Stores NRC inference result
+    GfxTexture accumulation_buffer_; // Stores persistent PT radiance
     GfxBuffer  counters_buffer_; // [0] = Query Count, [1] = Sample Count
 
     // Compute Checks
