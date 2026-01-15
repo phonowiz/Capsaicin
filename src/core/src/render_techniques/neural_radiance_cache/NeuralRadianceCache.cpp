@@ -202,7 +202,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_TextureSampler", capsaicin.getLinearWrapSampler());
     
     // Output
-    if (gfxGetTextureWidth(accumulation_buffer_) != renderDimensions.x || gfxGetTextureHeight(accumulation_buffer_) != renderDimensions.y)
+    if (accumulation_buffer_.getWidth() != renderDimensions.x || accumulation_buffer_.getHeight() != renderDimensions.y)
     {
         gfxDestroyTexture(gfx_, accumulation_buffer_);
         accumulation_buffer_ = capsaicin.createRenderTexture(DXGI_FORMAT_R32G32B32_FLOAT, "NRC_AccumulationBuffer");
