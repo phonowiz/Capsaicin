@@ -21,7 +21,7 @@ public:
     RenderOptionList getRenderOptions() noexcept override;
     struct RenderOptions
     {
-        bool     nrc_train_active     = false;
+        bool     nrc_train_active     = true;
         bool     nrc_inference_active = true;
         float    nrc_learning_rate    = 0.01f;
         uint32_t nrc_batch_size       = 1024;

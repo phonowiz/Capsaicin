@@ -38,6 +38,24 @@ RWStructuredBuffer<uint> g_Counters : register(u7); // [0]=Queries, [1]=Samples
 
 // Helper to include standard RT functions (pathMiss, pathClosestHit etc)
 #include "../../ray_tracing/path_tracing_rt.hlsl"
+// Parameters for the loop:
+// currentAreaSpread: initialized to 0.0f
+// threshold: 0.01f (as suggested in the paper)
+
+void UpdatePathSpread(
+    inout float currentAreaSpread, 
+    float distToNextHit, 
+    float pdf, 
+    float cosThetaAtNextHit)
+{
+    float distSq = distToNextHit * distToNextHit;
+    
+    // Formula 3: Increment area spread based on the current bounce's expansion
+    float expansion = distSq / (4.0f * 3.14159265f * pdf * max(cosThetaAtNextHit, 1e-4f));
+    currentAreaSpread += expansion;
+}
+
+
 
 template<typename RadianceT>
 void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout Random randomNG,
@@ -58,6 +76,9 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     float3 radianceAtCachePoint = 0.0f.xxx;
     float3 throughputAtCachePoint = 1.0f.xxx;
 
+    float samplePDF = 1.0f;
+    float primaryArea = 0.0f;
+    float currentAreaSpread = 0.0f;
     // Standard Path Tracing Loop
     for (uint bounce = currentBounce; bounce <= maxBounces; ++bounce)
     {
@@ -118,12 +139,30 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                  throughputAtCachePoint = throughput;
                  // We continue tracing to gather the "Target Radiance"
              }
-             
-             float samplePDF = 1.0f;
-             if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
-                bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
+
+             else
              {
-                 break;
+                float distToNextHit = length(iData.position - ray.origin);
+                float cosThetaAtNextHit = abs(dot(iData.normal, ray.direction));
+                UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
+
+                primaryArea = (bounce == currentBounce) ? currentAreaSpread: primaryArea;
+
+                
+                if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
+                    bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
+                {
+                    break;
+                }
+
+                if ((currentAreaSpread - primaryArea) > 0.01f * primaryArea)
+                {
+                    //TODO:
+                    // Path is now "blurry" enough.
+                    // 1. Stop tracing rays.
+                    // 2. Query the Neural Radiance Cache here.
+                    break;
+                }
              }
         }
         #endif

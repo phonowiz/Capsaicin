@@ -97,7 +97,7 @@ vector<pair<string_view, filesystem::path>> const CapsaicinMain::sceneEnvironmen
 };
 
 /** List of executable relative file paths to search for scene files */
-static array<filesystem::path, 4> const sceneDirectories = {"", "../../../", "../../", "../"};
+static array<filesystem::path, 7> const sceneDirectories = {"", "../../../../../../", "../../../../../", "../../../../", "../../../", "../../", "../"};
 
 CapsaicinMain::CapsaicinMain(string_view &&programNameIn) noexcept
     : programName(std::forward<string_view>(programNameIn))

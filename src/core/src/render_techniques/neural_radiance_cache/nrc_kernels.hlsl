@@ -7,7 +7,7 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 #define GROUP_SIZE 128
 #define NETWORK_WIDTH 64
-#define HIDDEN_LAYERS 5
+#define HIDDEN_LAYERS 6
 
 // Use float for now for stability and compatibility
 typedef float NrcFloat;
@@ -71,61 +71,78 @@ RWStructuredBuffer<NrcFloat> g_Momentum2 : register(u4);
 StructuredBuffer<uint> g_Counters : register(t2); // [0]=InferenceCount, [1]=TrainCount
 
 
-// --- Helper Functions ---
-// OneBlob encoding or similar would go here. For now, a placeholder identity/frequency encoding.
-// Mapping 3+3+3+1 = 10 input dims to 64 network dims.
-// Simple frequency encoding: sin/cos of (P * freq), etc.
-void EncodeInput(InferenceQuery query, out NrcFloat features[NETWORK_WIDTH])
-{
-    // Zero out
-    for(int i=0; i<NETWORK_WIDTH; ++i) features[i] = 0.0f;
+// Helper for Frequency Encoding using Triangle Waves
+float triangle_wave(float x) {
+    return abs(frac(x + 0.5) * 2.0 - 1.0);
+}
 
-    // Simple frequency encoding for Pos (x,y,z)
-    // 3 coords * 4 freqs * 2 (sin/cos) = 24
-    // Dir (x,y,z) * 2 freqs * 2 = 12
-    // Normal * 2 freqs * 2 = 12
-    // Roughness * 4 = 4
-    // Total used: 52. Pad rest.
-    
+// Helper for One-Blob Encoding using Quartic Kernels
+float quartic_kernel(float x) {
+    float v = 1.0 - x * x;
+    return (x >= -1.0 && x <= 1.0) ? (15.0/16.0) * v * v : 0.0;
+}
+
+void EncodeInputs(
+    // float3 pos,          // World position
+    // float3 viewDir,      // Scattered direction (unit vector)
+    // float3 normal,       // Surface normal (unit vector)
+    // float roughness,     // Surface roughness
+    // float3 diffuse,      // Diffuse reflectance
+    // float3 specular,     // Specular reflectance
+    InferenceQuery query
+    out float features[NETWORK_WIDTH] // Padded output array
+) {
+
+    float3 pos = query.pos;
+    float3 viewDir = query.dir;
+    float3 normal = query.normal;
+    float roughness = query.roughness;
+    float3 diffuse = query.albedo;
+    float3 specular = query.albedo;
     int idx = 0;
-    float3 p = query.pos;
-    float3 d = query.dir;
-    float3 n = query.normal;
-    
-    // Position frequencies
-    float freqs[] = { 1.0f, 2.0f, 4.0f, 8.0f };
-    [unroll]
-    for(int f=0; f<4; ++f)
-    {
-        float3 val = p * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+
+    // 1. Frequency Encoding for Position (3 components * 12 frequencies = 36 dims)
+    // Maps position to a geometric hierarchy of periodic functions
+    for (int i = 0; i < 3; ++i) {
+        float val = pos[i];
+        for (int f = 0; f < 12; ++f) {
+            features[idx++] = triangle_wave(val * pow(2.0, f));
+        }
     }
 
-    // Dir
-    [unroll]
-    for(int f=0; f<2; ++f)
-    {
-        float3 val = d * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+    // 2. One-Blob Encoding for Direction & Normals (2 params * 2D * 4 blobs = 16 dims)
+    // We convert unit vectors to spherical coordinates (theta, phi) first
+    float2 dir_sph = float2(acos(viewDir.y), atan2(viewDir.z, viewDir.x));
+    float2 norm_sph = float2(acos(normal.y), atan2(normal.z, normal.x));
+    float2 sph_coords[2] = { dir_sph, norm_sph };
+
+    for (int p = 0; p < 2; ++p) {
+        for (int d = 0; d < 2; ++d) {
+            float val = sph_coords[p][d];
+            for (int b = 0; b < 4; ++b) {
+                // Distribute across 4 evenly spaced blobs
+                features[idx++] = quartic_kernel(val - (float(b) / 3.0));
+            }
+        }
     }
-    
-    // Normal
-    [unroll]
-    for(int f=0; f<2; ++f)
-    {
-        float3 val = n * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+
+    // 3. One-Blob Encoding for Roughness (1 param * 4 blobs = 4 dims)
+    float r_mapped = 1.0 - exp(-roughness);
+    for (int b = 0; b < 4; ++b) {
+        features[idx++] = quartic_kernel(r_mapped - (float(b) / 3.0));
     }
-    
-    features[idx++] = query.roughness;
-    features[idx++] = sin(query.roughness * 3.14159f);
-    features[idx++] = cos(query.roughness * 3.14159f);
+
+    // 4. Identity Encoding for Reflectance (3 Diffuse + 3 Specular = 6 dims)
+    features[idx++] = diffuse.r;
+    features[idx++] = diffuse.g;
+    features[idx++] = diffuse.b;
+    features[idx++] = specular.r;
+    features[idx++] = specular.g;
+    features[idx++] = specular.b;
+
+    // 5. Padding (Total so far: 62. Pad to 64 for Tensor Core alignment)
+    features[idx++] = 1.0; // Acts as an implicit bias
+    features[idx++] = 1.0;
 }
 
 void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WIDTH])
@@ -135,7 +152,7 @@ void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WI
     q.dir = sample.dir;
     q.normal = sample.normal;
     q.roughness = sample.roughness;
-    EncodeInput(q, features);
+    EncodeInputs(q, features);
 }
 
 // Forward Pass
@@ -153,7 +170,8 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     
     // 1. Encode
     NrcFloat activations[NETWORK_WIDTH];
-    EncodeInput(query, activations);
+    //EncodeInput(query, activations);
+    EncodeInputs(query, activations);
     
     // 2. Run Layers
     for (int layer = 0; layer < HIDDEN_LAYERS + 2; ++layer) // +2 for In/Out?
@@ -346,3 +364,51 @@ void NRCTrain(uint3 dtid : SV_DispatchThreadID)
          for(int k=0; k<NETWORK_WIDTH; ++k) dL_dX[k] = dL_dX_prev[k];
     }
 }
+
+
+/*
+
+//run this after ray tracing...
+
+// Requires -enable-16bit-types and shader model 6.2+
+struct InitialGradientConstants {
+    uint TotalPixels;
+    float Epsilon;
+};
+
+ConstantBuffer<InitialGradientConstants> cb : register(b0);
+
+// StructuredBuffers for 16-bit types
+StructuredBuffer<float16_t2> global_outputs   : register(t0);
+StructuredBuffer<float16_t2> global_targets   : register(t1);
+RWStructuredBuffer<float16_t2> global_grads_out : register(u0);
+
+[numthreads(256, 1, 1)]
+void ComputeInitialGradientKernel(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    uint idx = dispatchThreadID.x;
+
+    if (idx >= cb.TotalPixels) return;
+
+    // Each 'pixel' has 3 colors (RGB) stored in two float16_t2 elements
+    // Note: The 4th channel is typically padding or bias
+    for (uint i = 0; i < 2; i++) {
+        uint bufferIdx = idx * 2 + i;
+        
+        float16_t2 pred   = global_outputs[bufferIdx];
+        float16_t2 target = global_targets[bufferIdx];
+
+        // Step 1: Calculate (Prediction - Target)
+        float16_t2 diff = pred - target;
+
+        // Step 2: Calculate Derivative of Relative L2 Loss
+        // Formula: 2 * (pred - target) / (pred^2 + epsilon)
+        float16_t2 pred_sq    = pred * pred;
+        float16_t2 epsilon    = (float16_t)cb.Epsilon;
+        float16_t2 denominator = pred_sq + epsilon;
+        
+        // Final Initial Gradient
+        global_grads_out[bufferIdx] = ((float16_t)2.0 * diff) / denominator;
+    }
+}
+
+*/

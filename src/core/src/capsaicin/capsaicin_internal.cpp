@@ -807,7 +807,7 @@ void CapsaicinInternal::initialize(GfxContext const &gfx, ImGuiContext *imgui_co
     // Check if shader source can be found
     error_code ec;
     bool       found = false;
-    for (uint32_t i = 0; i < 4; ++i)
+    for (uint32_t i = 0; i < 8; ++i)
     {
         if (filesystem::exists(shader_path_ + "gpu_shared.h", ec))
         {

@@ -78,7 +78,7 @@ target_compile_features(capsaicin PUBLIC cxx_std_20)
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     target_compile_options(capsaicin PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -pedantic -Werror>)
 elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-    target_compile_options(capsaicin PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP /W4 /WX /experimental:external /external:anglebrackets /external:W0 /analyze:external->)
+    target_compile_options(capsaicin PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP /W4 /WX /EHsc /experimental:external /external:anglebrackets /external:W0 /analyze:external->)
     target_compile_options(capsaicin PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/wd28020>) # The expression 'expr' is not true at this call - currently bugged
 elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
     if("${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
@@ -115,7 +115,7 @@ check_cxx_symbol_exists(_MSVC_STL_VERSION version MSVCSTL)
 if(MSVCSTL)
     target_compile_definitions(capsaicin PRIVATE
         _CRT_SECURE_NO_WARNINGS
-        _HAS_EXCEPTIONS=0
+        _HAS_EXCEPTIONS=1
         _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING
         _SILENCE_CXX17_OLD_ALLOCATOR_MEMBERS_DEPRECATION_WARNING
         NOMINMAX

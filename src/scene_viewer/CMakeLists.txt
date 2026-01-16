@@ -21,7 +21,7 @@ target_compile_features(scene_viewer PUBLIC cxx_std_20)
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     target_compile_options(scene_viewer PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -pedantic>)
 elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-    target_compile_options(scene_viewer PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP /W4 /WX /experimental:external /external:anglebrackets /external:W0 /analyze:external->)
+    target_compile_options(scene_viewer PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/MP /W4 /WX /EHsc /experimental:external /external:anglebrackets /external:W0 /analyze:external->)
 elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
     if("${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
         target_compile_options(scene_viewer PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /WX>)
@@ -35,7 +35,7 @@ target_compile_definitions(scene_viewer PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE
 )
 
-target_compile_definitions(scene_viewer PRIVATE "$<$<CONFIG:RelWithDebInfo>:SHADER_DEBUG>")
+target_compile_definitions(scene_viewer PRIVATE "SHADER_DEBUG")
 if(CAPSAICIN_ENABLE_EXPERIMENTAL_SHADERS)
     target_compile_definitions(scene_viewer PRIVATE "SHADER_EXPERIMENTAL")
 endif()

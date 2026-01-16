@@ -177,7 +177,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_BufferDimensions", renderDimensions);
     gfxProgramSetParameter(gfx_, rt_program_, "g_FrameIndex", capsaicin.getFrameIndex());
     gfxProgramSetParameter(gfx_, rt_program_, "g_RayCamera", cameraData);
-    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 5); // Hardcoded for now
+    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 10); // Hardcoded for now
     gfxProgramSetParameter(gfx_, rt_program_, "g_BounceRRCount", 2);
     gfxProgramSetParameter(gfx_, rt_program_, "g_Accumulate", 1);
     
@@ -227,20 +227,21 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     // gfxCommandMemoryBarrier? Not exposed. Assume implicit.
 
     // 2. Dispatch Inference
-    if (options.nrc_inference_active)
-    {
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
-       // Reuse the same texture created for RT output
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_);
-       
-       uint32_t num_queries = renderDimensions.x * renderDimensions.y; // Max possible
-       uint32_t num_groups = (num_queries + 127) / 128; 
-       gfxCommandBindKernel(gfx_, inference_kernel_);
-       gfxCommandDispatch(gfx_, num_groups, 1, 1);
-    }
+    //if (options.nrc_inference_active)
+    //{
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
+    //   // Reuse the same texture created for RT output
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_);
+    //
+    //   uint32_t num_queries = renderDimensions.x * renderDimensions.y; // Max possible
+    //   uint32_t num_groups = (num_queries + 127) / 128;
+    //   gfxCommandBindKernel(gfx_, inference_kernel_);
+    //   gfxCommandDispatch(gfx_, num_groups, 1, 1);
+    //}
+
     //
     //// 3. Dispatch Training
     //if (options.nrc_train_active)
@@ -256,10 +257,12 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     //    // We can dispatch max range and let kernel exit early.
     //    // Better: Dispatch based on batch size or counters.
     //    // Indirect dispatch would be ideal. For now, limit to batch size (4096).
-    //    uint32_t batch_size = 4096;
-    //    uint32_t num_groups_train = (batch_size + 127) / 128; 
+    //    uint32_t batch_size       = 4096;
+    //    uint32_t num_groups_train = (batch_size + 127) / 128;
     //    gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
     //}
+
+
 }
 
 void NeuralRadianceCache::setupSbt(CapsaicinInternal const &capsaicin) const noexcept
