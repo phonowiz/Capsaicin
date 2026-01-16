@@ -21,10 +21,10 @@ public:
     RenderOptionList getRenderOptions() noexcept override;
     struct RenderOptions
     {
-        uint32_t nrc_train_active = 0;
-        uint32_t nrc_inference_active = 1;
-        float    nrc_learning_rate = 0.01f;
-        uint32_t nrc_batch_size = 1024;
+        bool     nrc_train_active     = false;
+        bool     nrc_inference_active = true;
+        float    nrc_learning_rate    = 0.01f;
+        uint32_t nrc_batch_size       = 1024;
     };
     RenderOptions convertOptions(RenderOptionList const &options) noexcept;
 

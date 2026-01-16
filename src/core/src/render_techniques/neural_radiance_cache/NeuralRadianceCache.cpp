@@ -241,25 +241,25 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
        gfxCommandBindKernel(gfx_, inference_kernel_);
        gfxCommandDispatch(gfx_, num_groups, 1, 1);
     }
-    
-    // 3. Dispatch Training
-    if (options.nrc_train_active)
-    {
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Gradients", gradients_buffer_);
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);
-        gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);
+    //
+    //// 3. Dispatch Training
+    //if (options.nrc_train_active)
+    //{
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Gradients", gradients_buffer_);
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);
 
-        gfxCommandBindKernel(gfx_, train_kernel_);
-        // We can dispatch max range and let kernel exit early.
-        // Better: Dispatch based on batch size or counters.
-        // Indirect dispatch would be ideal. For now, limit to batch size (4096).
-        uint32_t batch_size = 4096;
-        uint32_t num_groups_train = (batch_size + 127) / 128; 
-        gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
-    }
+    //    gfxCommandBindKernel(gfx_, train_kernel_);
+    //    // We can dispatch max range and let kernel exit early.
+    //    // Better: Dispatch based on batch size or counters.
+    //    // Indirect dispatch would be ideal. For now, limit to batch size (4096).
+    //    uint32_t batch_size = 4096;
+    //    uint32_t num_groups_train = (batch_size + 127) / 128; 
+    //    gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
+    //}
 }
 
 void NeuralRadianceCache::setupSbt(CapsaicinInternal const &capsaicin) const noexcept
