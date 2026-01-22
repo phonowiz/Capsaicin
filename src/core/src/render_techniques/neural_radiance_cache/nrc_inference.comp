@@ -4,7 +4,7 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 #include "nrc_common.hlsl"
 
-ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+//ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 
 RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
 StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
@@ -25,7 +25,7 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     
     // 1. Encode
     NrcFloat activations[NETWORK_WIDTH];
-    EncodeInput(query, activations);
+    EncodeInputs(query, activations);
     
     // 2. Run Layers
     for (int layer = 0; layer < HIDDEN_LAYERS + 2; ++layer)
@@ -67,14 +67,14 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     float3 radiance = float3(activations[0], activations[1], activations[2]);
     radiance = max(0.0f, radiance);
     
-    float3 final_color = radiance * (query.albedo + 0.001f);
+    float3 final_color = radiance * (query.albedo.rgb + 0.001f);
     
     float4 acc = g_AccumulationBuffer[query.pixel_coord];
     float3 current_radiance = acc.xyz;
     uint sample_count = asuint(acc.w);
     
     if (sample_count > 0)
-        g_AccumulationBuffer[query.pixel_coord] = float4(current_radiance + (final_color * query.throughput / (float) sample_count), asfloat(sample_count));
+        g_AccumulationBuffer[query.pixel_coord] = float4(current_radiance + (final_color * query.throughput.rgb / (float) sample_count), asfloat(sample_count));
     
     g_OutputTexture[query.pixel_coord] = float4(final_color, 1.0f);
 }

@@ -2,6 +2,8 @@
 Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 ********************************************************************/
 
+#include "nrc_common.hlsl"
+
 // #include "../../gpu_shared.h" // Removed to avoid include path issues. 
 // Standard HLSL types used.
 
@@ -9,7 +11,13 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 #define NETWORK_WIDTH 64
 #define HIDDEN_LAYERS 6
 
-// Use float for now for stability and compatibility
+
+// Use 16-bit types for performance (Requires -enable-16bit-types and SM 6.2+)
+typedef half  float16_t;
+typedef half2 float16_t2;
+typedef half3 float16_t3;
+typedef half4 float16_t4;
+
 typedef float NrcFloat;
 typedef float2 NrcFloat2;
 typedef float3 NrcFloat3;
@@ -28,22 +36,22 @@ ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 // Weights buffer: [Layer 0 (64x64 + 64 bias) | Layer 1 | ... ]
 // For simplicity, let's assume fully connected layers without explicit bias in the matrix for now (or bias concatenated)
 // The reference kernel uses 64 inputs -> 64 outputs.
-RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
+//RWStructuredBuffer<float16_t2> g_Weights : register(u0);
 
 // Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64
 // We will assume the input buffer already contains encoded features for this pass, 
 // or we do on-the-fly encoding. Ideally on-the-fly.
 // Let's store raw queries and encode in kernel.
-struct InferenceQuery
-{
-    float3 pos;
-    float3 dir;
-    float3 normal;
-    float roughness;
-    float3 albedo;
-    uint2 pixel_coord;
-    float3 throughput; // Added
-};
+// struct InferenceQuery
+// {
+//     float3 pos;
+//     float3 dir;
+//     float3 normal;
+//     float roughness;
+//     float3 albedo;
+//     uint2 pixel_coord;
+//     float3 throughput; // Added
+// };
 
 StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
 RWTexture2D<float4> g_OutputTexture : register(u1);
@@ -71,79 +79,8 @@ RWStructuredBuffer<NrcFloat> g_Momentum2 : register(u4);
 StructuredBuffer<uint> g_Counters : register(t2); // [0]=InferenceCount, [1]=TrainCount
 
 
-// Helper for Frequency Encoding using Triangle Waves
-float triangle_wave(float x) {
-    return abs(frac(x + 0.5) * 2.0 - 1.0);
-}
+// Redundant encoding helpers removed (now in nrc_common.hlsl)
 
-// Helper for One-Blob Encoding using Quartic Kernels
-float quartic_kernel(float x) {
-    float v = 1.0 - x * x;
-    return (x >= -1.0 && x <= 1.0) ? (15.0/16.0) * v * v : 0.0;
-}
-
-void EncodeInputs(
-    // float3 pos,          // World position
-    // float3 viewDir,      // Scattered direction (unit vector)
-    // float3 normal,       // Surface normal (unit vector)
-    // float roughness,     // Surface roughness
-    // float3 diffuse,      // Diffuse reflectance
-    // float3 specular,     // Specular reflectance
-    InferenceQuery query
-    out float features[NETWORK_WIDTH] // Padded output array
-) {
-
-    float3 pos = query.pos;
-    float3 viewDir = query.dir;
-    float3 normal = query.normal;
-    float roughness = query.roughness;
-    float3 diffuse = query.albedo;
-    float3 specular = query.albedo;
-    int idx = 0;
-
-    // 1. Frequency Encoding for Position (3 components * 12 frequencies = 36 dims)
-    // Maps position to a geometric hierarchy of periodic functions
-    for (int i = 0; i < 3; ++i) {
-        float val = pos[i];
-        for (int f = 0; f < 12; ++f) {
-            features[idx++] = triangle_wave(val * pow(2.0, f));
-        }
-    }
-
-    // 2. One-Blob Encoding for Direction & Normals (2 params * 2D * 4 blobs = 16 dims)
-    // We convert unit vectors to spherical coordinates (theta, phi) first
-    float2 dir_sph = float2(acos(viewDir.y), atan2(viewDir.z, viewDir.x));
-    float2 norm_sph = float2(acos(normal.y), atan2(normal.z, normal.x));
-    float2 sph_coords[2] = { dir_sph, norm_sph };
-
-    for (int p = 0; p < 2; ++p) {
-        for (int d = 0; d < 2; ++d) {
-            float val = sph_coords[p][d];
-            for (int b = 0; b < 4; ++b) {
-                // Distribute across 4 evenly spaced blobs
-                features[idx++] = quartic_kernel(val - (float(b) / 3.0));
-            }
-        }
-    }
-
-    // 3. One-Blob Encoding for Roughness (1 param * 4 blobs = 4 dims)
-    float r_mapped = 1.0 - exp(-roughness);
-    for (int b = 0; b < 4; ++b) {
-        features[idx++] = quartic_kernel(r_mapped - (float(b) / 3.0));
-    }
-
-    // 4. Identity Encoding for Reflectance (3 Diffuse + 3 Specular = 6 dims)
-    features[idx++] = diffuse.r;
-    features[idx++] = diffuse.g;
-    features[idx++] = diffuse.b;
-    features[idx++] = specular.r;
-    features[idx++] = specular.g;
-    features[idx++] = specular.b;
-
-    // 5. Padding (Total so far: 62. Pad to 64 for Tensor Core alignment)
-    features[idx++] = 1.0; // Acts as an implicit bias
-    features[idx++] = 1.0;
-}
 
 void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WIDTH])
 {
@@ -155,111 +92,248 @@ void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WI
     EncodeInputs(q, features);
 }
 
-// Forward Pass
-// Uses Shared Memory for weights to reuse across thread block.
-// Groupshared: We need to load 64x64 float weights. 4KB. Fits easily.
-groupshared NrcFloat s_LayerWeights[NETWORK_WIDTH * NETWORK_WIDTH];
 
-[numthreads(GROUP_SIZE, 1, 1)]
+/**********************************************************************
+Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+********************************************************************/
+
+// /**********************************************************************
+Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+********************************************************************/
+
+#include "nrc_common.hlsl"
+
+// Enable 16-bit types
+typedef half  float16_t;
+typedef half2 float16_t2;
+
+#define NETWORK_WIDTH 64
+#define LAYER_WIDTH_HALVES 32   
+#define THREAD_NEURONS_HALVES 8   
+#define BLOCK_PIXELS 128        
+
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+
+StructuredBuffer<float16_t2> g_Weights : register(t1);
+StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
+StructuredBuffer<uint> g_Counters : register(t2);
+
+// Output: intermediate activations for backward pass
+// Size = [NumLayers (7)][NumQueries][32 half2]
+RWStructuredBuffer<float16_t2> g_Activations : register(u2);
+
+RWTexture2D<float4> g_OutputTexture : register(u1);
+RWTexture2D<float4> g_AccumulationBuffer : register(u5);
+
+groupshared float16_t2 s_activations[LAYER_WIDTH_HALVES][BLOCK_PIXELS];
+groupshared float16_t2 s_weights[LAYER_WIDTH_HALVES * 64];
+
+[numthreads(BLOCK_PIXELS, 1, 1)]
 void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
 {
-    uint count = g_Counters[0];
-    if (dtid.x >= count) return; // Dynamic count check
+    const uint pixel_in_block = gtid.x;
+    const uint warp_id = gtid.x / 32;
+    const uint global_pixel_idx = dtid.x;
 
-    InferenceQuery query = g_InferenceQueries[dtid.x];
+    uint count = g_Counters[0];
+    if (global_pixel_idx >= count)
+        return;
+
+    InferenceQuery query = g_InferenceQueries[global_pixel_idx];
     
-    // 1. Encode
-    NrcFloat activations[NETWORK_WIDTH];
-    //EncodeInput(query, activations);
-    EncodeInputs(query, activations);
+    // 1. Encode Input
+    NrcFloat activations_f[NETWORK_WIDTH];
+    EncodeInputs(query, activations_f);
     
-    // 2. Run Layers
-    for (int layer = 0; layer < HIDDEN_LAYERS + 2; ++layer) // +2 for In/Out?
+    // Store initial encoded features into Shared Memory
+    [unroll]
+    for (int i = 0; i < LAYER_WIDTH_HALVES; i++)
     {
-        // For simplicity, let's do 5 layers of 64x64.
-        // Load Weights into Shared Memory cooperatively
-        // Total weights: 64*64 = 4096.
-        // Threads: 128. Each thread loads 32 floats.
-        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
-        
-        for (int i = 0; i < 32; ++i)
+        s_activations[i][pixel_in_block] = float16_t2(
+            (float16_t)activations_f[i * 2], 
+            (float16_t)activations_f[i * 2 + 1]
+        );
+    }
+
+    // --- MLP Layers ---
+    [loop]
+    for (int layer = 0; layer < 7; layer++)
+    {
+        // A. LOG ACTIVATIONS (Before they are overwritten by matrix multiply)
+        // These are the inputs to the current 'layer'
+        [unroll]
+        for (int k = 0; k < LAYER_WIDTH_HALVES; k++)
         {
-            int idx = i * GROUP_SIZE + gtid.x;
-            if (idx < NETWORK_WIDTH * NETWORK_WIDTH)
-            {
-                s_LayerWeights[idx] = g_Weights[weight_offset + idx];
-            }
+            uint act_idx = (layer * g_NRCConstants.num_inference_queries + global_pixel_idx) * LAYER_WIDTH_HALVES + k;
+            g_Activations[act_idx] = s_activations[k][pixel_in_block];
+        }
+
+        const int LAYER_WEIGHT_STRIDE = NETWORK_WIDTH * LAYER_WIDTH_HALVES;
+        // B. Cooperative Weight Load
+        [unroll]
+        for (int j = 0; j < 16; j++)
+        {
+            int w_idx = j * BLOCK_PIXELS + pixel_in_block;
+            s_weights[w_idx] = g_Weights[layer * LAYER_WEIGHT_STRIDE + w_idx];
         }
         GroupMemoryBarrierWithGroupSync();
-        
-        // Matrix Multiply: Output = Activation * Weight
-        // We calculate new activations for this thread
-        NrcFloat next_activations[NETWORK_WIDTH];
-        
-        for (int out_row = 0; out_row < NETWORK_WIDTH; ++out_row)
+
+        // C. Compute (Fused half2 Multiply-Accumulate)
+        float16_t2 my_results[THREAD_NEURONS_HALVES]; 
+        [unroll]
+        for (int out_pair = 0; out_pair < THREAD_NEURONS_HALVES; out_pair++)
         {
-            NrcFloat sum = 0.0f;
-            for (int in_col = 0; in_col < NETWORK_WIDTH; ++in_col)
+            float16_t2 sum2 = (float16_t2)0.0;
+            int row_index = (warp_id * THREAD_NEURONS_HALVES) + out_pair;
+
+            [unroll]
+            for (int in_pair = 0; in_pair < LAYER_WIDTH_HALVES; in_pair++)
             {
-                // W is stored Row-Major? Let's assume W[row][col]
-                // Output[row] = Sum(Input[col] * W[row][col])
-                sum += activations[in_col] * s_LayerWeights[out_row * NETWORK_WIDTH + in_col];
+                sum2 += s_activations[in_pair][pixel_in_block] * s_weights[row_index * LAYER_WIDTH_HALVES + in_pair];
             }
-            
-            // ReLU (except last layer?)
-            // For now, ReLU all hidden.
-            if (layer < HIDDEN_LAYERS)
-                 next_activations[out_row] = max(0.0f, sum);
-            else
-                 next_activations[out_row] = sum; // Sigmoid or Linear for last?
+            // ReLU
+            my_results[out_pair] = max(sum2, (float16_t2)0.0);
         }
-        
-        // Update registers
-        activations = next_activations;
-        
+
+        // D. Hand-off (Write the new activations for the next loop/layer)
+        GroupMemoryBarrierWithGroupSync();
+        [unroll]
+        for (int out_p = 0; out_p < THREAD_NEURONS_HALVES; out_p++)
+        {
+            int r_idx = (warp_id * THREAD_NEURONS_HALVES) + out_p;
+            s_activations[r_idx][pixel_in_block] = my_results[out_p];
+        }
         GroupMemoryBarrierWithGroupSync();
     }
-    
-    // 3. Output
-    // First 3 floats are RGB.
-    // Factorize with Albedo (from query).
-    float3 radiance = float3(activations[0], activations[1], activations[2]);
-    
-    // Apply albedo factorization (demodulation)
-    // In paper: Network predicts "Radiance / Albedo" (plus some factor), so we multiply back.
-    // Ensure positive
+
+    // 3. Final Write-out (Reducing 64 neurons to RGB and Factorizing)
+    float16_t2 rg_raw = s_activations[0][pixel_in_block];
+    float16_t  b_raw  = s_activations[1][pixel_in_block].x;
+
+    float3 radiance = float3((float)rg_raw.x, (float)rg_raw.y, (float)b_raw);
     radiance = max(0.0f, radiance);
     
-    // Write Output
-    // Simple Exponential accumulation check
-    float3 final_color = radiance * (query.albedo + 0.001f); // Multiply by albedo
+    float3 final_color = radiance * (query.albedo + 0.001f);
     
-    // Add to Accumulation
-    // Note: This is racy if multiple queries hit same pixel? 
-    // Usually 1 query per pixel if bounce=2.
-    // If we have jitter, we need to access the AccBuffer carefully.
-    // But let's assume standard accumulation logic happens in RayGen for primary, here for indirect.
-    // "radiance" here is L_indirect.
-    // L_total = L_primary + Throughput * L_indirect
-    
+    // Accumulation Buffer Logic
     float4 acc = g_AccumulationBuffer[query.pixel_coord];
     float3 current_radiance = acc.xyz;
     uint sample_count = asuint(acc.w);
     
-    // Weighted update? The RayGen already divided L_primary by N.
-    // We should divide this by N too.
-    // BUT RayGen did: rad = rad_prev + (new - rad_prev)/N.
-    // It's easier if RayGen writes (L_primary) and we ADD (Throughput * L_nrc / N).
-    // Or we just strictly add to the current frame's radiance before averaging?
-    // Let's assume RayGen wrote `Prev + (Primary - Prev)/N`.
-    // We want `Prev + ((Primary + T*NRC) - Prev)/N`.
-    // Difference is `(T*NRC)/N`.
-    
     if (sample_count > 0)
-        g_AccumulationBuffer[query.pixel_coord] = float4(current_radiance + (final_color * query.throughput / (float)sample_count), asfloat(sample_count));
+    {
+        float3 updated = current_radiance + (final_color * query.throughput / (float)sample_count);
+        g_AccumulationBuffer[query.pixel_coord] = float4(updated, asfloat(sample_count));
+    }
     
     g_OutputTexture[query.pixel_coord] = float4(final_color, 1.0f);
 }
+
+// Forward Pass
+// Uses Shared Memory for weights to reuse across thread block.
+// Groupshared: We need to load 64x64 float weights. 4KB. Fits easily.
+// groupshared NrcFloat s_LayerWeights[NETWORK_WIDTH * NETWORK_WIDTH];
+
+// [numthreads(GROUP_SIZE, 1, 1)]
+// void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+// {
+//     uint count = g_Counters[0];
+//     if (dtid.x >= count) return; // Dynamic count check
+
+//     InferenceQuery query = g_InferenceQueries[dtid.x];
+    
+//     // 1. Encode
+//     NrcFloat activations[NETWORK_WIDTH][GROUP_SIZE];
+//     //EncodeInput(query, activations);
+//     EncodeInputs(query, activations);
+    
+//     // 2. Run Layers
+//     for (int layer = 0; layer < HIDDEN_LAYERS; ++layer) // +2 for In/Out?
+//     {
+//         // For simplicity, let's do 5 layers of 64x64.
+//         // Load Weights into Shared Memory cooperatively
+//         // Total weights: 64*64 = 4096.
+//         // Threads: 128. Each thread loads 32 floats.
+//         uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
+        
+//         for (int i = 0; i < 32; ++i)
+//         {
+//             int idx = i * GROUP_SIZE + gtid.x;
+//             if (idx < NETWORK_WIDTH * NETWORK_WIDTH)
+//             {
+//                 s_LayerWeights[idx] = g_Weights[weight_offset + idx];
+//             }
+//         }
+//         GroupMemoryBarrierWithGroupSync();
+        
+//         // Matrix Multiply: Output = Activation * Weight
+//         // We calculate new activations for this thread
+//         NrcFloat next_activations[NETWORK_WIDTH];
+        
+//         for (int out_row = 0; out_row < NETWORK_WIDTH; ++out_row)
+//         {
+//             NrcFloat sum = 0.0f;
+//             for (int in_col = 0; in_col < NETWORK_WIDTH; ++in_col)
+//             {
+//                 // W is stored Row-Major? Let's assume W[row][col]
+//                 // Output[row] = Sum(Input[col] * W[row][col])
+//                 sum += activations[in_col] * s_LayerWeights[out_row * NETWORK_WIDTH + in_col];
+//             }
+            
+//             // ReLU (except last layer?)
+//             // For now, ReLU all hidden.
+//             if (layer < HIDDEN_LAYERS)
+//                  next_activations[out_row] = max(0.0f, sum);
+//             else
+//                  next_activations[out_row] = sum; // Sigmoid or Linear for last?
+//         }
+        
+//         // Update registers
+//         activations = next_activations;
+        
+//         GroupMemoryBarrierWithGroupSync();
+//     }
+    
+//     // 3. Output
+//     // First 3 floats are RGB.
+//     // Factorize with Albedo (from query).
+//     float3 radiance = float3(activations[0], activations[1], activations[2]);
+    
+//     // Apply albedo factorization (demodulation)
+//     // In paper: Network predicts "Radiance / Albedo" (plus some factor), so we multiply back.
+//     // Ensure positive
+//     radiance = max(0.0f, radiance);
+    
+//     // Write Output
+//     // Simple Exponential accumulation check
+//     float3 final_color = radiance * (query.albedo + 0.001f); // Multiply by albedo
+    
+//     // Add to Accumulation
+//     // Note: This is racy if multiple queries hit same pixel? 
+//     // Usually 1 query per pixel if bounce=2.
+//     // If we have jitter, we need to access the AccBuffer carefully.
+//     // But let's assume standard accumulation logic happens in RayGen for primary, here for indirect.
+//     // "radiance" here is L_indirect.
+//     // L_total = L_primary + Throughput * L_indirect
+    
+//     float4 acc = g_AccumulationBuffer[query.pixel_coord];
+//     float3 current_radiance = acc.xyz;
+//     uint sample_count = asuint(acc.w);
+    
+//     // Weighted update? The RayGen already divided L_primary by N.
+//     // We should divide this by N too.
+//     // BUT RayGen did: rad = rad_prev + (new - rad_prev)/N.
+//     // It's easier if RayGen writes (L_primary) and we ADD (Throughput * L_nrc / N).
+//     // Or we just strictly add to the current frame's radiance before averaging?
+//     // Let's assume RayGen wrote `Prev + (Primary - Prev)/N`.
+//     // We want `Prev + ((Primary + T*NRC) - Prev)/N`.
+//     // Difference is `(T*NRC)/N`.
+    
+//     if (sample_count > 0)
+//         g_AccumulationBuffer[query.pixel_coord] = float4(current_radiance + (final_color * query.throughput / (float)sample_count), asfloat(sample_count));
+    
+//     g_OutputTexture[query.pixel_coord] = float4(final_color, 1.0f);
+// }
 
 // Training Kernel
 // Naive implementation: One thread per sample. 

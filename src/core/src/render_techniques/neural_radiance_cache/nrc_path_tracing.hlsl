@@ -49,12 +49,18 @@ void UpdatePathSpread(
     float cosThetaAtNextHit)
 {
     float distSq = distToNextHit * distToNextHit;
-    
     // Formula 3: Increment area spread based on the current bounce's expansion
-    float expansion = distSq / (4.0f * 3.14159265f * pdf * max(cosThetaAtNextHit, 1e-4f));
+    float expansion = sqrt(distSq / ( pdf * max(cosThetaAtNextHit, 1e-4f)));
+
     currentAreaSpread += expansion;
 }
 
+float getPrimaryAreaSpread(
+    float distToNextHit, 
+    float cosThetaAtNextHit)
+{
+    return distToNextHit * distToNextHit / (4.0f * 3.14159265f * max(cosThetaAtNextHit, 1e-4f));
+}
 
 
 template<typename RadianceT>
@@ -64,14 +70,15 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 {
     // NRC Constants
     const uint kNRCBounce = 2; // Fixed for now
+    const uint kTrainingBounce = 2; // Fixed for now
 
     // State for training
     TrainingSample trainingSample; 
-    trainingSample.pos = 0.0f.xxx;
-    trainingSample.dir = 0.0f.xxx;
-    trainingSample.normal = 0.0f.xxx;
+    trainingSample.pos.xyz = 0.0f.xxx;
+    trainingSample.dir.xyz = 0.0f.xxx;
+    trainingSample.normal.xyz = 0.0f.xxx;
     trainingSample.roughness = 0.0f;
-    trainingSample.target_radiance = 0.0f.xxx;
+    trainingSample.target_radiance.xyz = 0.0f.xxx;
     bool trainingVertexFound = false;
     float3 radianceAtCachePoint = 0.0f.xxx;
     float3 throughputAtCachePoint = 1.0f.xxx;
@@ -92,13 +99,13 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             if (queryIdx < 1920*1080) // Safety
             {
                 InferenceQuery q;
-                q.pos = ray.origin;
-                q.dir = ray.direction;
-                q.normal = normal; // Approx
+                q.pos = float4(ray.origin, 0.f);
+                q.dir = float4(ray.direction, 0.f);
+                q.normal = float4(normal, 0.f); // Approx
                 q.roughness = 0.5f; // Placeholder
-                q.albedo = float3(1,1,1); // Used for factorization in kernel (simplified)
+                q.albedo = float4(1,1,1,0); // Used for factorization in kernel (simplified)
                 q.pixel_coord = pixelCoord;
-                q.throughput = throughput; // STORE THROUGHPUT
+                q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
                 g_InferenceQueries_RT[queryIdx] = q;
             }
             break; // Stop tracing
@@ -127,27 +134,32 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
              HitInfo hitData = GetHitInfoRtInlineCommitted(rayQuery);
              IntersectData iData = MakeIntersectData(hitData);
              
-             // If training ray, and we are at the "Cache point" (bounce kNRCBounce), record inputs
-             if (isTrainingRay && bounce == kNRCBounce)
-             {
-                 trainingSample.pos = iData.position;
-                 trainingSample.dir = ray.direction;
-                 trainingSample.normal = iData.normal;
-                 trainingSample.roughness = 0.5f;
-                 trainingVertexFound = true;
-                 radianceAtCachePoint = radiance;
-                 throughputAtCachePoint = throughput;
-                 // We continue tracing to gather the "Target Radiance"
-             }
+            //  // If training ray, and we are at the "Cache point" (bounce kNRCBounce), record inputs
+            //  if (isTrainingRay && bounce == kNRCBounce)
+            //  {
+            //      trainingSample.pos = iData.position;
+            //      trainingSample.dir = ray.direction;
+            //      trainingSample.normal = iData.normal;
+            //      trainingSample.roughness = 0.5f;
+            //      trainingVertexFound = true;
+            //      radianceAtCachePoint = radiance;
+            //      throughputAtCachePoint = throughput;
+            //      // We continue tracing to gather the "Target Radiance"
+            //  }
 
-             else
+            //  else
              {
                 float distToNextHit = length(iData.position - ray.origin);
                 float cosThetaAtNextHit = abs(dot(iData.normal, ray.direction));
-                UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
 
-                primaryArea = (bounce == currentBounce) ? currentAreaSpread: primaryArea;
-
+                if(bounce == currentBounce)
+                {
+                    primaryArea = getPrimaryAreaSpread(distToNextHit, cosThetaAtNextHit);
+                }
+                else
+                {
+                    UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
+                }
                 
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
@@ -155,13 +167,26 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                     break;
                 }
 
-                if ((currentAreaSpread - primaryArea) > 0.01f * primaryArea)
+                if ((currentAreaSpread * currentAreaSpread) > 0.01f * primaryArea)
                 {
-                    //TODO:
-                    // Path is now "blurry" enough.
-                    // 1. Stop tracing rays.
-                    // 2. Query the Neural Radiance Cache here.
+                    if(isTrainingRay && !trainingVertexFound)
+                    {
+                        trainingSample.pos.xyz = iData.position;
+                        trainingSample.dir.xyz = ray.direction;
+                        trainingSample.normal.xyz = iData.normal;
+                        trainingSample.roughness = 0.5f;
+                        trainingVertexFound = true;
+                        radianceAtCachePoint = radiance;
+                        throughputAtCachePoint = throughput;    
+                    }
+
+                    if(isTrainingRay && (currentBounce - bounce) < kTrainingBounce)
+                    {
+                        continue;
+                    }
+                    
                     break;
+                       
                 }
              }
         }
@@ -177,8 +202,10 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
         InterlockedAdd(g_Counters[1], 1, sampleIdx);
         if (sampleIdx < 4096) 
         {
-             // Target radiance is the suffix: (Final - AtBounce) / ThroughputAtBounce
-             trainingSample.target_radiance = (radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f);
+             //what we are doing here is isolating the suffix radiance from the prefix radiance.
+             //We do this by subtracting the radiance at the cache point from the final radiance.
+             //Then we divide by the throughput at the cache point to get the raw suffix radiance.
+             trainingSample.target_radiance.xyz = (radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f);
              g_TrainingSamples_RT[sampleIdx] = trainingSample;
         }
     }

@@ -15,80 +15,96 @@ typedef float2 NrcFloat2;
 typedef float3 NrcFloat3;
 typedef float4 NrcFloat4;
 
-struct NRCConstants
-{
-    uint num_training_samples;
-    uint num_inference_queries;
-    float learning_rate;
-    uint batch_size;
-};
+// struct NRCConstants
+// {
+//     uint num_training_samples;
+//     uint num_inference_queries;
+//     float learning_rate;
+//     uint batch_size;
+// };
 
 // Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64
 struct InferenceQuery
 {
-    float3 pos;
-    float3 dir;
-    float3 normal;
-    float roughness;
-    float3 albedo;
-    uint2 pixel_coord;
-    float3 throughput;
+    float4 pos;
+    float4 dir;
+    float4 normal;
+    float4 albedo;
+    float4 throughput;
+    uint2  pixel_coord;
+    float  roughness;
 };
 
 struct TrainingSample
 {
-    float3 pos;
-    float3 dir;
-    float3 normal;
+    float4 pos;
+    float4 dir;
+    float4 normal;
+    float4 target_radiance;
     float roughness;
-    float3 target_radiance;
 };
 
 // --- Helper Functions ---
-void EncodeInput(InferenceQuery query, out NrcFloat features[NETWORK_WIDTH])
+// Helper for Frequency Encoding using Triangle Waves
+float triangle_wave(float x) {
+    return abs(frac(x + 0.5) * 2.0 - 1.0);
+}
+
+// Helper for One-Blob Encoding using Quartic Kernels
+float quartic_kernel(float x) {
+    float v = 1.0 - x * x;
+    return (x >= -1.0 && x <= 1.0) ? (15.0/16.0) * v * v : 0.0;
+}
+
+void EncodeInputs(InferenceQuery query, out float features[NETWORK_WIDTH])
 {
-    // Zero out
-    for(int i=0; i<NETWORK_WIDTH; ++i) features[i] = 0.0f;
-
+    float3 pos = query.pos.xyz;
+    float3 viewDir = query.dir.xyz;
+    float3 normal = query.normal.xyz;
+    float roughness = query.roughness;
+    float3 diffuse = query.albedo.rgb;
+    float3 specular = query.albedo.rgb;
     int idx = 0;
-    float3 p = query.pos;
-    float3 d = query.dir;
-    float3 n = query.normal;
-    
-    // Position frequencies
-    float freqs[] = { 1.0f, 2.0f, 4.0f, 8.0f };
-    [unroll]
-    for(int f=0; f<4; ++f)
-    {
-        float3 val = p * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+
+    // 1. Frequency Encoding for Position (3 components * 12 frequencies = 36 dims)
+    for (int i = 0; i < 3; ++i) {
+        float val = pos[i];
+        for (int f = 0; f < 12; ++f) {
+            features[idx++] = triangle_wave(val * pow(2.0, f));
+        }
     }
 
-    // Dir
-    [unroll]
-    for(int f=0; f<2; ++f)
-    {
-        float3 val = d * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+    // 2. One-Blob Encoding for Direction & Normals (2 params * 2D * 4 blobs = 16 dims)
+    float2 dir_sph = float2(acos(viewDir.y), atan2(viewDir.z, viewDir.x));
+    float2 norm_sph = float2(acos(normal.y), atan2(normal.z, normal.x));
+    float2 sph_coords[2] = { dir_sph, norm_sph };
+
+    for (int p = 0; p < 2; ++p) {
+        for (int d = 0; d < 2; ++d) {
+            float val = sph_coords[p][d];
+            for (int b = 0; b < 4; ++b) {
+                features[idx++] = quartic_kernel(val - (float(b) / 3.0));
+            }
+        }
     }
-    
-    // Normal
-    [unroll]
-    for(int f=0; f<2; ++f)
-    {
-        float3 val = n * freqs[f];
-        features[idx++] = sin(val.x); features[idx++] = cos(val.x);
-        features[idx++] = sin(val.y); features[idx++] = cos(val.y);
-        features[idx++] = sin(val.z); features[idx++] = cos(val.z);
+
+    // 3. One-Blob Encoding for Roughness (1 param * 4 blobs = 4 dims)
+    float r_mapped = 1.0 - exp(-roughness);
+    for (int b = 0; b < 4; ++b) {
+        features[idx++] = quartic_kernel(r_mapped - (float(b) / 3.0));
     }
-    
-    features[idx++] = query.roughness;
-    features[idx++] = sin(query.roughness * 3.14159f);
-    features[idx++] = cos(query.roughness * 3.14159f);
+
+    // 4. Identity Encoding for Reflectance (3 Diffuse + 3 Specular = 6 dims)
+    features[idx++] = diffuse.r;
+    features[idx++] = diffuse.g;
+    features[idx++] = diffuse.b;
+    features[idx++] = specular.r;
+    features[idx++] = specular.g;
+    features[idx++] = specular.b;
+
+    // 5. Padding (Total so far: 62. Pad to 64)
+    features[idx++] = 1.0; 
+    features[idx++] = 1.0;
 }
 
 void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WIDTH])
@@ -98,10 +114,10 @@ void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WI
     q.dir = sample.dir;
     q.normal = sample.normal;
     q.roughness = sample.roughness;
-    q.albedo = float3(0,0,0);
+    q.albedo = 0;
     q.pixel_coord = uint2(0,0);
-    q.throughput = float3(0,0,0);
-    EncodeInput(q, features);
+    q.throughput = 0;
+    EncodeInputs(q, features);
 }
 
 #endif

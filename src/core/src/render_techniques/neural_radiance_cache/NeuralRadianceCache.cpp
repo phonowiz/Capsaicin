@@ -63,37 +63,77 @@ SharedTextureList NeuralRadianceCache::getSharedTextures() const noexcept
 
 bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
 {
-    // Initialize Buffers
-    uint32_t weight_count = 65536; 
+    // Initialize Buffers (7 layers of 64x64 weights)
+    uint32_t num_layers = 7;
+    uint32_t weight_count = num_layers * 64 * 64; 
     
-    // Init Weights on CPU with Xavier/He initialization
-    std::vector<float> initial_weights(weight_count);
+    // Simple float-to-half conversion helper for initialization
+    auto floatToHalf = [](float f) -> uint16_t {
+        uint32_t i = *((uint32_t*)&f);
+        uint32_t s = (i >> 16) & 0x00008000;
+        uint32_t e = ((i >> 23) & 0x000000ff) - (127 - 15);
+        uint32_t m = i & 0x007fffff;
+        if (e <= 0) return (uint16_t)s;
+        if (e >= 31) return (uint16_t)(s | 0x7c00);
+        return (uint16_t)(s | (e << 10) | (m >> 13));
+    };
+
+    // Init Weights on CPU with Xavier/He initialization (as half-precision)
+    std::vector<uint16_t> initial_weights(weight_count);
     std::mt19937 rng(42);
     std::normal_distribution<float> dist(0.0f, 0.1f); 
-    for(auto& w : initial_weights) w = dist(rng);
+    for(auto& w : initial_weights) w = floatToHalf(dist(rng));
 
-    weights_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(float), initial_weights.data(), kGfxCpuAccess_None);
+    weights_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(uint16_t), initial_weights.data(), kGfxCpuAccess_None);
     weights_buffer_.setName("NRC_Weights");
     
-    gradients_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(float), nullptr, kGfxCpuAccess_None);
+    gradients_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
     gradients_buffer_.setName("NRC_Gradients");
     
-    momentum1_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(float), nullptr, kGfxCpuAccess_None);
-    momentum2_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(float), nullptr, kGfxCpuAccess_None);
+    momentum1_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
+    momentum2_buffer_ = gfxCreateBuffer(gfx_, weight_count * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
 
     // Queries/Samples
     uint32_t max_queries = 1920 * 1080;
-    // Struct size check: Pos(3)+Dir(3)+Norm(3)+Rough(1)+Alb(3)+P(2)+Th(3) = 18 floats = 72 bytes.
-    // 2M * 72 = 144MB.
-    uint32_t struct_size = 72; // Conservative
+
+    struct TrainingSample
+    {
+        glm::float4 pos;
+        glm::float4 dir;
+        glm::float4 normal;
+        glm::float4 target_radiance;
+        float roughness;
+    };
+
+    struct InferenceQuery
+    {
+        float4 pos;
+        float4 dir;
+        float4 normal;
+        float4 albedo;
+        float4 throughput;
+        uint2  pixel_coord;
+        float  roughness;
+    };
+
+    uint32_t struct_size = sizeof(InferenceQuery);
+
     inference_queries_ = gfxCreateBuffer(gfx_, max_queries * struct_size, nullptr, kGfxCpuAccess_None);
     inference_queries_.setName("NRC_InferenceQueries");
     
+    struct_size = sizeof(TrainingSample);
     training_samples_ = gfxCreateBuffer(gfx_, max_queries * struct_size, nullptr, kGfxCpuAccess_None);
     training_samples_.setName("NRC_TrainingSamples");
+
+    // Activations: 7 layers * max_queries pixels * 64 neurons (stored as 32 half2)
+    activations_buffer_ = gfxCreateBuffer(gfx_, 7 * max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
+    activations_buffer_.setName("NRC_Activations");
     
     counters_buffer_ = gfxCreateBuffer(gfx_, 2 * sizeof(uint32_t), nullptr, kGfxCpuAccess_None); 
     counters_buffer_.setName("NRC_Counters");
+
+    constants_buffer_ = gfxCreateBuffer<NRCConstants>(gfx_, 1, nullptr, kGfxCpuAccess_Write);
+    constants_buffer_.setName("NRC_Constants");
 
     output_texture_ = capsaicin.createRenderTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, "NRC_Output");
     accumulation_buffer_ = capsaicin.createRenderTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, "NRC_AccumulationBuffer");
@@ -229,8 +269,20 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     // 2. Dispatch Inference
     //if (options.nrc_inference_active)
     //{
+    //   // Update Constants
+    //   //NRCConstants constants;
+    //   //constants.num_training_samples = 0; // Will be set by counters later if needed, but for inference we just need queries
+    //   //constants.num_inference_queries = renderDimensions.x * renderDimensions.y;
+    //   //constants.learning_rate = options.nrc_learning_rate;
+    //   //constants.batch_size = options.nrc_batch_size;
+    //   //
+    //   //gfxBufferMap(gfx_, constants_buffer_, &constants, sizeof(constants));
+    //   //gfxBufferUnmap(gfx_, constants_buffer_);
+
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
     //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
     //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
+    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);
     //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
     //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
     //   // Reuse the same texture created for RT output

@@ -26,6 +26,14 @@ public:
         float    nrc_learning_rate    = 0.01f;
         uint32_t nrc_batch_size       = 1024;
     };
+
+    struct NRCConstants
+    {
+        uint32_t num_training_samples;
+        uint32_t num_inference_queries;
+        float    learning_rate;
+        uint32_t batch_size;
+    };
     RenderOptions convertOptions(RenderOptionList const &options) noexcept;
 
     ComponentList getComponents() const noexcept override;
@@ -44,6 +52,7 @@ private:
     GfxBuffer inference_queries_;
     GfxBuffer training_samples_;
     GfxBuffer constants_buffer_;
+    GfxBuffer activations_buffer_;
 
     GfxProgram nrc_inference_program_;
     GfxProgram nrc_train_program_;
