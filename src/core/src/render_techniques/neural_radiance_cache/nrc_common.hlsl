@@ -15,13 +15,13 @@ typedef float2 NrcFloat2;
 typedef float3 NrcFloat3;
 typedef float4 NrcFloat4;
 
-// struct NRCConstants
-// {
-//     uint num_training_samples;
-//     uint num_inference_queries;
-//     float learning_rate;
-//     uint batch_size;
-// };
+struct NRCConstants
+{
+    uint num_training_samples;
+    uint num_inference_queries;
+    float learning_rate;
+    uint batch_size;
+};
 
 // Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64
 struct InferenceQuery
@@ -63,7 +63,9 @@ void EncodeInputs(InferenceQuery query, out float features[NETWORK_WIDTH])
     float3 normal = query.normal.xyz;
     float roughness = query.roughness;
     float3 diffuse = query.albedo.rgb;
-    float3 specular = query.albedo.rgb;
+
+    //todo: add specular
+    float3 specular = 0;//query.albedo.rgb;
     int idx = 0;
 
     // 1. Frequency Encoding for Position (3 components * 12 frequencies = 36 dims)

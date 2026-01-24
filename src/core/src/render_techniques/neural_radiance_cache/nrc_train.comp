@@ -4,16 +4,18 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 #include "nrc_common.hlsl"
 
-//ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 
-RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
-StructuredBuffer<TrainingSample> g_TrainingSamples : register(t1);
+// SRVs
+StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
+StructuredBuffer<float16_t2>    g_Weights          : register(t1);
+StructuredBuffer<TrainingSample> g_TrainingSamples  : register(t2);
+StructuredBuffer<uint>           g_Counters         : register(t3);
 
-RWStructuredBuffer<NrcFloat> g_Gradients : register(u2);
-RWStructuredBuffer<NrcFloat> g_Momentum1 : register(u3);
-RWStructuredBuffer<NrcFloat> g_Momentum2 : register(u4);
-
-StructuredBuffer<uint> g_Counters : register(t2);
+// UAVs
+RWStructuredBuffer<NrcFloat>   g_Gradients          : register(u3);
+RWStructuredBuffer<NrcFloat>   g_Momentum1           : register(u4);
+RWStructuredBuffer<NrcFloat>   g_Momentum2           : register(u5);
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void NRCTrain(uint3 dtid : SV_DispatchThreadID)

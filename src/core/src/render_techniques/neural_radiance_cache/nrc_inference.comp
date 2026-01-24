@@ -4,7 +4,7 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 #include "nrc_common.hlsl"
 
-//ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 
 RWStructuredBuffer<NrcFloat> g_Weights : register(u0);
 StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);

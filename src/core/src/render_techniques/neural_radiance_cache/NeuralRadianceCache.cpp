@@ -141,8 +141,8 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     ray_camera_buffer_ = gfxCreateBuffer<RayCamera>(gfx_, 1, nullptr, kGfxCpuAccess_Write);
     ray_camera_buffer_.setName("NRC_RayCamera");
 
-    nrc_inference_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_inference");
-    nrc_train_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_train");
+    nrc_inference_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_kernels");
+    nrc_train_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_kernels");
 
     return initKernels(capsaicin);
 }
@@ -267,52 +267,46 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     // gfxCommandMemoryBarrier? Not exposed. Assume implicit.
 
     // 2. Dispatch Inference
-    //if (options.nrc_inference_active)
-    //{
-    //   // Update Constants
-    //   //NRCConstants constants;
-    //   //constants.num_training_samples = 0; // Will be set by counters later if needed, but for inference we just need queries
-    //   //constants.num_inference_queries = renderDimensions.x * renderDimensions.y;
-    //   //constants.learning_rate = options.nrc_learning_rate;
-    //   //constants.batch_size = options.nrc_batch_size;
-    //   //
-    //   //gfxBufferMap(gfx_, constants_buffer_, &constants, sizeof(constants));
-    //   //gfxBufferUnmap(gfx_, constants_buffer_);
+    // 2. Dispatch Inference
+    if (options.nrc_inference_active)
+    {
+       // Update Constants
+       NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
+       constants->num_training_samples = 4096; // Current max batch size
+       constants->num_inference_queries = renderDimensions.x * renderDimensions.y;
+       constants->learning_rate = options.nrc_learning_rate;
+       constants->batch_size = options.nrc_batch_size;
 
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
-    //   // Reuse the same texture created for RT output
-    //   gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_);
-    //
-    //   uint32_t num_queries = renderDimensions.x * renderDimensions.y; // Max possible
-    //   uint32_t num_groups = (num_queries + 127) / 128;
-    //   gfxCommandBindKernel(gfx_, inference_kernel_);
-    //   gfxCommandDispatch(gfx_, num_groups, 1, 1);
-    //}
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_);
+    
+       uint32_t num_queries = renderDimensions.x * renderDimensions.y;
+       uint32_t num_groups = (num_queries + 127) / 128;
+       gfxCommandBindKernel(gfx_, inference_kernel_);
+       gfxCommandDispatch(gfx_, num_groups, 1, 1);
+    }
 
-    //
-    //// 3. Dispatch Training
-    //if (options.nrc_train_active)
-    //{
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Gradients", gradients_buffer_);
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);
-    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);
+    // 3. Dispatch Training
+    // if (options.nrc_train_active)
+    // {
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_NRCConstants", constants_buffer_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Gradients", gradients_buffer_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);
+    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);
 
-    //    gfxCommandBindKernel(gfx_, train_kernel_);
-    //    // We can dispatch max range and let kernel exit early.
-    //    // Better: Dispatch based on batch size or counters.
-    //    // Indirect dispatch would be ideal. For now, limit to batch size (4096).
-    //    uint32_t batch_size       = 4096;
-    //    uint32_t num_groups_train = (batch_size + 127) / 128;
-    //    gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
-    //}
+    //     gfxCommandBindKernel(gfx_, train_kernel_);
+    //     uint32_t batch_size       = 4096;
+    //     uint32_t num_groups_train = (batch_size + 127) / 128;
+    //     gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
+    // }
 
 
 }
