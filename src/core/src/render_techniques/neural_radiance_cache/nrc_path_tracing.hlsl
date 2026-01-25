@@ -148,7 +148,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             //  }
 
             //  else
-             {
+            {
                 float distToNextHit = length(iData.position - ray.origin);
                 float cosThetaAtNextHit = abs(dot(iData.normal, ray.direction));
 
@@ -160,7 +160,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 {
                     UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
                 }
-                
+
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
                 {
@@ -169,44 +169,74 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 
                 if ((currentAreaSpread * currentAreaSpread) > 0.01f * primaryArea)
                 {
-                    if(isTrainingRay && !trainingVertexFound)
-                    {
-                        trainingSample.pos.xyz = iData.position;
-                        trainingSample.dir.xyz = ray.direction;
-                        trainingSample.normal.xyz = iData.normal;
-                        trainingSample.roughness = 0.5f;
-                        trainingVertexFound = true;
-                        radianceAtCachePoint = radiance;
-                        throughputAtCachePoint = throughput;    
-                    }
+                    Material material = g_MaterialBuffer[iData.materialIndex];
+                    MaterialEvaluated evalMaterial = MakeMaterialEvaluated(material, iData.uv);
 
-                    if(isTrainingRay && (currentBounce - bounce) < kTrainingBounce)
+                    if(isTrainingRay)
                     {
-                        continue;
+
+                        if(!trainingVertexFound)
+                        {
+
+                            trainingSample.pos.xyz = iData.position;
+                            trainingSample.dir.xyz = ray.direction;
+                            trainingSample.normal.xyz = iData.normal;
+                            trainingSample.roughness = 0.5f;
+                            trainingVertexFound = true;
+                            radianceAtCachePoint = radiance;
+                            throughputAtCachePoint = throughput;    
+                        }
+
+                        if(isTrainingRay && (currentBounce - bounce) < kTrainingBounce)
+                        {
+                            continue;
+                        }
+                        else break;
                     }
-                    
-                    break;
-                       
+                    else
+                    {
+                        uint queryIdx;
+                        InterlockedAdd(g_Counters[0], 1, queryIdx);
+                        if (queryIdx < 1920*1080) // Safety
+                        {
+                            InferenceQuery q= {};
+                            q.pos.xyz = iData.position;
+                            q.dir = float4(ray.direction, 0.f);
+                            q.normal.xyz = iData.normal; // Approx
+                            q.roughness = evalMaterial.roughness; // Use real roughness
+                            q.albedo.rgb = evalMaterial.albedo;    // Use real albedo for factorization
+                            q.pixel_coord = pixelCoord;
+                            q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
+                            g_InferenceQueries_RT[queryIdx] = q;
+                        }
+                        break;
+                    }
                 }
-             }
+            }
         }
         #endif
     }
     
+    //radiance = 0.0f.xxx;
     // If we finished a training ray, emit sample
     if (isTrainingRay && trainingVertexFound)
     {
+
+        //break;
         uint sampleIdx;
         // Limit to a reasonable batch size (e.g. 4096) to prevent overflow/TDR
         // Also checks against buffer size.
         InterlockedAdd(g_Counters[1], 1, sampleIdx);
-        if (sampleIdx < 4096) 
+        if (sampleIdx < 1920 * 1080) 
         {
+            //radiance = float3(1.0f, 0.0f, 0.0f);
              //what we are doing here is isolating the suffix radiance from the prefix radiance.
              //We do this by subtracting the radiance at the cache point from the final radiance.
              //Then we divide by the throughput at the cache point to get the raw suffix radiance.
-             trainingSample.target_radiance.xyz = (radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f);
-             g_TrainingSamples_RT[sampleIdx] = trainingSample;
+            trainingSample.target_radiance.xyzw = float4((radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f), 1.0f);
+            g_TrainingSamples_RT[sampleIdx] = trainingSample;
+
+            //radiance  = 0.0f.xxx;
         }
     }
 }

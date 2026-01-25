@@ -4,89 +4,156 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 #include "nrc_common.hlsl"
 
+// Enable 16-bit types
+typedef half  float16_t;
+typedef half2 float16_t2;
+
+#define LAYER_WIDTH_HALVES 32   
+#define BLOCK_PIXELS 64         // Reduced from 128 to fit in 32KB shared memory
+#define WARPS_PER_BLOCK (BLOCK_PIXELS / 32)
+#define THREAD_NEURONS_HALVES (LAYER_WIDTH_HALVES / WARPS_PER_BLOCK) // 32 / 2 = 16
+
 ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 
 // SRVs
-StructuredBuffer<InferenceQuery> g_InferenceQueries : register(t0);
 StructuredBuffer<float16_t2>    g_Weights          : register(t1);
 StructuredBuffer<TrainingSample> g_TrainingSamples  : register(t2);
 StructuredBuffer<uint>           g_Counters         : register(t3);
 
 // UAVs
-RWStructuredBuffer<NrcFloat>   g_Gradients          : register(u3);
+RWStructuredBuffer<float16_t2> g_Activations        : register(u2);
+RWStructuredBuffer<uint>       g_WeightGradients    : register(u3); 
 RWStructuredBuffer<NrcFloat>   g_Momentum1           : register(u4);
 RWStructuredBuffer<NrcFloat>   g_Momentum2           : register(u5);
+RWStructuredBuffer<float16_t2> g_IncomingGradients  : register(u7); 
 
-[numthreads(GROUP_SIZE, 1, 1)]
-void NRCTrain(uint3 dtid : SV_DispatchThreadID)
+groupshared float16_t2 s_activations[LAYER_WIDTH_HALVES][BLOCK_PIXELS];
+groupshared float16_t2 s_weights_T[LAYER_WIDTH_HALVES * 64]; 
+groupshared float16_t2 s_dL_da[LAYER_WIDTH_HALVES][BLOCK_PIXELS];
+
+// Helper for atomic addition of packed half2
+void InterlockedAddHalf2(uint address, float16_t2 value)
 {
-    uint count = g_Counters[1];
-    if (dtid.x >= count)
+    uint current = g_WeightGradients[address];
+    uint expected;
+    [allow_uav_condition]
+    do {
+        expected = current;
+        // Bit-accurate conversion from packed uint to float16_t2
+        float2 f32 = float2(f16tof32(current & 0xFFFF), f16tof32(current >> 16));
+        float16_t2 sum = (float16_t2)f32 + value;
+        uint next = f32tof16(sum.x) | (f32tof16(sum.y) << 16);
+        InterlockedCompareExchange(g_WeightGradients[address], expected, next, current);
+    } while (current != expected);
+}
+
+[numthreads(BLOCK_PIXELS, 1, 1)]
+void NRCTrain(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 ctid : SV_GroupID)
+{
+    const int pixel_in_block = gtid.x;
+    const int warp_id = gtid.x / 32;
+    const int lane_id = gtid.x % 32;
+    const int global_pixel_idx = dtid.x;
+    const uint total_samples = g_Counters[1];
+
+    if (global_pixel_idx >= total_samples)
         return;
-    
-    TrainingSample sample = g_TrainingSamples[dtid.x];
-    
-     // Forward Pass
-    NrcFloat layer_activations[HIDDEN_LAYERS + 1][NETWORK_WIDTH];
-    
-    EncodeInputTraining(sample, layer_activations[0]);
-    
-    for (int layer = 0; layer < HIDDEN_LAYERS; ++layer)
+
+    // 1. Initial Load: Gradients from the output layer
+    [unroll]
+    for (int i = 0; i < LAYER_WIDTH_HALVES; i++)
     {
-        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
-         
-        for (int r = 0; r < NETWORK_WIDTH; ++r)
-        {
-            NrcFloat sum = 0.0f;
-            for (int c = 0; c < NETWORK_WIDTH; ++c)
-            {
-                sum += layer_activations[layer][c] * g_Weights[weight_offset + r * NETWORK_WIDTH + c];
-            }
-            layer_activations[layer + 1][r] = max(0.0f, sum); // ReLU
-        }
+        s_dL_da[i][pixel_in_block] = g_IncomingGradients[global_pixel_idx * LAYER_WIDTH_HALVES + i];
     }
-    
-    float3 prediction = float3(layer_activations[HIDDEN_LAYERS][0], layer_activations[HIDDEN_LAYERS][1], layer_activations[HIDDEN_LAYERS][2]);
-    float3 target = sample.target_radiance.rgb;
-    
-    float3 dL_dPred = prediction - target;
-    
-     // Backprop
-    NrcFloat dL_dX[NETWORK_WIDTH];
-    
-    for (int i = 0; i < NETWORK_WIDTH; ++i)
-        dL_dX[i] = 0.0f;
-    dL_dX[0] = dL_dPred.x;
-    dL_dX[1] = dL_dPred.y;
-    dL_dX[2] = dL_dPred.z;
-    
-    for (int layer = HIDDEN_LAYERS - 1; layer >= 0; --layer)
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. Backprop Loop (7 layers)
+    [loop]
+    for (int layer = 6; layer >= 0; layer--)
     {
-        uint weight_offset = layer * NETWORK_WIDTH * NETWORK_WIDTH;
-        NrcFloat dL_dX_prev[NETWORK_WIDTH];
-        for (int k = 0; k < NETWORK_WIDTH; ++k)
-            dL_dX_prev[k] = 0.0f;
-         
-        for (int r = 0; r < NETWORK_WIDTH; ++r)
+        // --- A. LOAD PHASE ---
+        // Load activations from forward pass
+        [unroll]
+        for (int i = 0; i < LAYER_WIDTH_HALVES; i++)
         {
-            NrcFloat output_val = layer_activations[layer + 1][r];
-            NrcFloat grad = (output_val > 0.0f) ? dL_dX[r] : 0.0f;
-             
-              // Gradients w/ Atomics (Placeholder / Performance Warning)
-            for (int c = 0; c < NETWORK_WIDTH; ++c)
+            uint act_idx = (layer * g_NRCConstants.activations_stride + g_NRCConstants.activations_offset + global_pixel_idx) * LAYER_WIDTH_HALVES + i;
+            s_activations[i][pixel_in_block] = g_Activations[act_idx];
+        }
+
+        // Load weights and TRANSPOSE them into shared memory
+        // Total weights per layer: 2048 (as float16_t2)
+        // With 64 threads, each loads 32 pairs.
+        [unroll]
+        for (int i = 0; i < 32; i++)
+        {
+            int linear_idx = (i * BLOCK_PIXELS) + pixel_in_block;
+            int row = linear_idx / 32;
+            int col = linear_idx % 32;
+            // Store W[row][col] into smem[col][row]
+            s_weights_T[col * 64 + row] = g_Weights[layer * 2048 + linear_idx];
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        // --- B. COMPUTE WEIGHT GRADIENTS (dl_dW = X^T * dl_da) ---
+        float16_t2 local_delta_w[THREAD_NEURONS_HALVES];
+        [unroll]
+        for (int i = 0; i < THREAD_NEURONS_HALVES; i++) 
+            local_delta_w[i] = (float16_t2)0.0;
+
+        [loop]
+        for (int pix = 0; pix < BLOCK_PIXELS; pix++)
+        {
+            // If the pixel in the block is out of bounds for the entire batch, skip its contribution
+            if (ctid.x * BLOCK_PIXELS + pix >= total_samples) continue;
+
+            float16_t2 grad = s_dL_da[lane_id][pix];
+            [unroll]
+            for (int i = 0; i < THREAD_NEURONS_HALVES; i++)
             {
-                NrcFloat w_grad = grad * layer_activations[layer][c];
-                int w_idx = weight_offset + r * NETWORK_WIDTH + c;
-                  // See notes on atomics
-            }
-             
-            for (int c = 0; c < NETWORK_WIDTH; ++c)
-            {
-                dL_dX_prev[c] += grad * g_Weights[weight_offset + r * NETWORK_WIDTH + c];
+                int row_idx = (warp_id * THREAD_NEURONS_HALVES) + i;
+                float16_t2 act = s_activations[row_idx][pix];
+                local_delta_w[i] += act * grad;
             }
         }
-         
-        for (int k = 0; k < NETWORK_WIDTH; ++k)
-            dL_dX[k] = dL_dX_prev[k];
+
+        // Write weight gradients to global memory using atomics
+        [unroll]
+        for (int i = 0; i < THREAD_NEURONS_HALVES; i++)
+        {
+            int row = (warp_id * THREAD_NEURONS_HALVES) + i;
+            int global_idx = layer * 2048 + (row * 32 + lane_id);
+            InterlockedAddHalf2(global_idx, local_delta_w[i]);
+        }
+
+        // --- C. COMPUTE INPUT GRADIENTS (dL/dX = G * W^T) with ReLU Derivative ---
+        float16_t2 next_grads[THREAD_NEURONS_HALVES];
+        [unroll]
+        for (int in_p = 0; in_p < THREAD_NEURONS_HALVES; in_p++)
+        {
+            float16_t2 g_sum = (float16_t2)0.0;
+            [unroll]
+            for (int out_p = 0; out_p < LAYER_WIDTH_HALVES; out_p++)
+            {
+                int my_in_p = (warp_id * THREAD_NEURONS_HALVES) + in_p;
+                float16_t2 w_t = s_weights_T[my_in_p * 64 + out_p];
+                float16_t2 g_up = s_dL_da[out_p][pixel_in_block];
+                g_sum += g_up * w_t;
+            }
+            
+            int act_idx = (warp_id * THREAD_NEURONS_HALVES) + in_p;
+            float16_t2 fwd_act = s_activations[act_idx][pixel_in_block];
+            float16_t2 mask = (float16_t2)(fwd_act > (float16_t2)0.0);
+            next_grads[in_p] = g_sum * mask;
+        }
+
+        // --- D. HAND-OFF ---
+        GroupMemoryBarrierWithGroupSync();
+        [unroll]
+        for (int i = 0; i < THREAD_NEURONS_HALVES; i++)
+        {
+            int row_idx = (warp_id * THREAD_NEURONS_HALVES) + i;
+            s_dL_da[row_idx][pixel_in_block] = next_grads[i];
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
 }

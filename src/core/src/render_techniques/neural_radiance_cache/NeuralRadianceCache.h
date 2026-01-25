@@ -33,6 +33,8 @@ public:
         uint32_t num_inference_queries;
         float    learning_rate;
         uint32_t batch_size;
+        uint32_t activations_stride;
+        uint32_t activations_offset;
     };
     RenderOptions convertOptions(RenderOptionList const &options) noexcept;
 
@@ -53,6 +55,7 @@ private:
     GfxBuffer training_samples_;
     GfxBuffer constants_buffer_;
     GfxBuffer activations_buffer_;
+    GfxBuffer incoming_gradients_;
 
     GfxProgram nrc_inference_program_;
     GfxProgram nrc_train_program_;

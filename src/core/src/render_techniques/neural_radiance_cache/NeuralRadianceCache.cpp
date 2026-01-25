@@ -125,9 +125,11 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     training_samples_ = gfxCreateBuffer(gfx_, max_queries * struct_size, nullptr, kGfxCpuAccess_None);
     training_samples_.setName("NRC_TrainingSamples");
 
-    // Activations: 7 layers * max_queries pixels * 64 neurons (stored as 32 half2)
     activations_buffer_ = gfxCreateBuffer(gfx_, 7 * max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
     activations_buffer_.setName("NRC_Activations");
+
+    incoming_gradients_ = gfxCreateBuffer(gfx_, max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
+    incoming_gradients_.setName("NRC_IncomingGradients");
     
     counters_buffer_ = gfxCreateBuffer(gfx_, 2 * sizeof(uint32_t), nullptr, kGfxCpuAccess_None); 
     counters_buffer_.setName("NRC_Counters");
@@ -141,8 +143,8 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     ray_camera_buffer_ = gfxCreateBuffer<RayCamera>(gfx_, 1, nullptr, kGfxCpuAccess_Write);
     ray_camera_buffer_.setName("NRC_RayCamera");
 
-    nrc_inference_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_kernels");
-    nrc_train_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_kernels");
+    nrc_inference_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_inference");
+    nrc_train_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_train");
 
     return initKernels(capsaicin);
 }
@@ -217,7 +219,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_BufferDimensions", renderDimensions);
     gfxProgramSetParameter(gfx_, rt_program_, "g_FrameIndex", capsaicin.getFrameIndex());
     gfxProgramSetParameter(gfx_, rt_program_, "g_RayCamera", cameraData);
-    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 10); // Hardcoded for now
+    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 5); // Hardcoded for now
     gfxProgramSetParameter(gfx_, rt_program_, "g_BounceRRCount", 2);
     gfxProgramSetParameter(gfx_, rt_program_, "g_Accumulate", 1);
     
@@ -272,18 +274,21 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     {
        // Update Constants
        NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
-       constants->num_training_samples = 4096; // Current max batch size
+       constants->num_training_samples = 1920 * 1080; // Full screen batch size
        constants->num_inference_queries = renderDimensions.x * renderDimensions.y;
        constants->learning_rate = options.nrc_learning_rate;
        constants->batch_size = options.nrc_batch_size;
+       constants->activations_stride = 1920 * 1080; // max_queries
+       constants->activations_offset = 0;
 
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", output_texture_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_);
+       // Bind Inference Parameters
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);   // b0
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);           // t1
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_); // t0
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);         // t3
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", capsaicin.getSharedTexture("Color"));     // u1
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);     // u2
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_); // u6
     
        uint32_t num_queries = renderDimensions.x * renderDimensions.y;
        uint32_t num_groups = (num_queries + 127) / 128;
@@ -292,21 +297,24 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     }
 
     // 3. Dispatch Training
-    // if (options.nrc_train_active)
-    // {
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_NRCConstants", constants_buffer_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Gradients", gradients_buffer_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);
-    //     gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);
+    //if (options.nrc_train_active)
+    //{
+    //    // Bind Training Parameters
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_NRCConstants", constants_buffer_);     // b0
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Weights", weights_buffer_);             // t1
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_TrainingSamples", training_samples_);   // t2
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_WeightGradients", gradients_buffer_);    // u3
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum1", momentum1_buffer_);         // u4
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Momentum2", momentum2_buffer_);         // u5
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Counters", counters_buffer_);           // t3
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_IncomingGradients", incoming_gradients_); // u7
+    //    gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Activations", activations_buffer_);     // u2
 
-    //     gfxCommandBindKernel(gfx_, train_kernel_);
-    //     uint32_t batch_size       = 4096;
-    //     uint32_t num_groups_train = (batch_size + 127) / 128;
-    //     gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
-    // }
+    //    gfxCommandBindKernel(gfx_, train_kernel_);
+    //    uint32_t batch_size       = 1920 * 1080;
+    //    uint32_t num_groups_train = (batch_size + 63) / 64; // Block size is 64 in nrc_train.comp
+    //    gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
+    //}
 
 
 }
@@ -360,6 +368,7 @@ void NeuralRadianceCache::terminate() noexcept
     gfxDestroyBuffer(gfx_, ray_camera_buffer_);
     gfxDestroyBuffer(gfx_, momentum1_buffer_);
     gfxDestroyBuffer(gfx_, momentum2_buffer_);
+    gfxDestroyBuffer(gfx_, incoming_gradients_);
 
     gfxDestroyTexture(gfx_, output_texture_);
     gfxDestroyTexture(gfx_, accumulation_buffer_);
