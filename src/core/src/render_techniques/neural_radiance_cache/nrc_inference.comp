@@ -103,14 +103,13 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
         GroupMemoryBarrierWithGroupSync();
     }
 
-    if(warp_id == 0)
     {
         // 3. Final Write-out (Reducing 64 neurons to RGB and Factorizing)
         float16_t2 rg_raw = s_activations[0][pixel_in_block];
         float16_t  b_raw  = s_activations[1][pixel_in_block].x;
 
         float3 radiance_pred = float3((float)rg_raw.x, (float)rg_raw.y, (float)b_raw);
-        radiance_pred = max(0.0f, radiance_pred);
+        radiance_pred = max(0.0f, radiance_pred) * 20.f;
         
         // Follow paper: L_total = L_direct + Throughput * (Albedo * Pred)
         float3 l_indirect = (radiance_pred * query.albedo.rgb) * query.throughput.rgb;

@@ -74,11 +74,11 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 
     // State for training
     TrainingSample trainingSample; 
-    trainingSample.pos.xyz = 0.0f.xxx;
-    trainingSample.dir.xyz = 0.0f.xxx;
-    trainingSample.normal.xyz = 0.0f.xxx;
+    trainingSample.pos = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.dir = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.roughness = 0.0f;
-    trainingSample.target_radiance.xyz = 0.0f.xxx;
+    trainingSample.target_radiance = float4(0.0f, 0.0f, 0.0f, 0.0f);
     bool trainingVertexFound = false;
     float3 radianceAtCachePoint = 0.0f.xxx;
     float3 throughputAtCachePoint = 1.0f.xxx;
@@ -169,7 +169,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 
                 if ((currentAreaSpread * currentAreaSpread) > 0.01f * primaryArea)
                 {
-                    Material material = g_MaterialBuffer[iData.materialIndex];
+                    Material material = iData.material;
                     MaterialEvaluated evalMaterial = MakeMaterialEvaluated(material, iData.uv);
 
                     if(isTrainingRay)
@@ -178,18 +178,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         if(!trainingVertexFound)
                         {
 
-                            trainingSample.pos.xyz = iData.position;
-                            trainingSample.dir.xyz = ray.direction;
-                            trainingSample.normal.xyz = iData.normal;
+                            trainingSample.pos = float4(iData.position, 0.f);
+                            trainingSample.dir = float4(ray.direction, 0.f);
+                            trainingSample.normal = float4(iData.normal, 0.f);
                             trainingSample.roughness = 0.5f;
                             trainingVertexFound = true;
                             radianceAtCachePoint = radiance;
-                            throughputAtCachePoint = throughput;    
-                        }
-
-                        if(isTrainingRay && (currentBounce - bounce) < kTrainingBounce)
-                        {
-                            continue;
+                            throughputAtCachePoint = throughput;
+                            currentAreaSpread = 0;  
                         }
                         else break;
                     }
@@ -199,14 +195,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         InterlockedAdd(g_Counters[0], 1, queryIdx);
                         if (queryIdx < 1920*1080) // Safety
                         {
-                            InferenceQuery q= {};
-                            q.pos.xyz = iData.position;
+                            InferenceQuery q;
+                            q.pos = float4(iData.position, 0.f);
                             q.dir = float4(ray.direction, 0.f);
-                            q.normal.xyz = iData.normal; // Approx
-                            q.roughness = evalMaterial.roughness; // Use real roughness
-                            q.albedo.rgb = evalMaterial.albedo;    // Use real albedo for factorization
+                            q.normal = float4(iData.normal, 0.f);
+                            q.roughness = evalMaterial.roughness;
+                            q.albedo = float4(evalMaterial.albedo, 0.f);
                             q.pixel_coord = pixelCoord;
-                            q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
+                            q.throughput = float4(throughput, 0.f);
                             g_InferenceQueries_RT[queryIdx] = q;
                         }
                         break;
