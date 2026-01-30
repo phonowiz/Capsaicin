@@ -1,0 +1,57 @@
+// Define constants to match your network architecture
+#define TOTAL_WEIGHT_ELEMENTS (7 * 2048)
+
+struct AdamConstants {
+    float learningRate;
+    float beta1;
+    float beta2;
+    float epsilon;
+    uint t; // Current training step/frame count
+};
+
+ConstantBuffer<AdamConstants> g_AdamConstants : register(b0);
+
+// Using float16_t2 requires -enable-16bit-types and Shader Model 6.2+
+RWStructuredBuffer<float16_t2> g_Weights    : register(u0);
+RWStructuredBuffer<float16_t2> g_Gradients  : register(u1);
+RWStructuredBuffer<float16_t2> g_Momentum1  : register(u2); // First Moment
+RWStructuredBuffer<float16_t2> g_Momentum2  : register(u3); // Second Moment
+
+[numthreads(256, 1, 1)]
+void main(uint3 DTid : SV_DispatchThreadID) {
+    uint idx = DTid.x;
+    if (idx >= TOTAL_WEIGHT_ELEMENTS) return;
+
+    // 1. Load data and convert to 32-bit float for high-precision math
+    float2 g = (float2)g_Gradients[idx];
+    float2 w = (float2)g_Weights[idx];
+    float2 m = (float2)g_Momentum1[idx];
+    float2 v = (float2)g_Momentum2[idx];
+
+    // 2. Compute Bias Correction terms: 1 - beta^t
+    float biasCorr1 = 1.0f - pow(g_AdamConstants.beta1, (float)g_AdamConstants.t);
+    float biasCorr2 = 1.0f - pow(g_AdamConstants.beta2, (float)g_AdamConstants.t);
+
+    // 3. Update Moments
+    // m = beta1 * m + (1 - beta1) * g
+    m = g_AdamConstants.beta1 * m + (1.0f - g_AdamConstants.beta1) * g;
+    // v = beta2 * v + (1 - beta2) * g^2
+    v = g_AdamConstants.beta2 * v + (1.0f - g_AdamConstants.beta2) * (g * g);
+
+    // 4. Calculate Adam update
+    // w = w - learningRate * (m_hat / (sqrt(v_hat) + epsilon))
+    float2 mHat = m / biasCorr1;
+    float2 vHat = v / biasCorr2;
+
+    float2 delta = g_AdamConstants.learningRate * (mHat / (sqrt(vHat) + g_AdamConstants.epsilon));
+    w -= delta;
+
+    // 5. Write results back to 16-bit buffers
+    g_Weights[idx] = (float16_t2)w;
+    g_Momentum1[idx] = (float16_t2)m;
+    g_Momentum2[idx] = (float16_t2)v;
+
+    // 6. Reset gradients for the next frame's accumulation
+    // This is vital since the Backward pass uses AtomicAdd!
+    g_Gradients[idx] = (float16_t2)0.0f;
+}

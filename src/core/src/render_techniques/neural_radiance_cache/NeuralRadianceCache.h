@@ -23,7 +23,7 @@ public:
     {
         bool     nrc_train_active     = true;
         bool     nrc_inference_active = true;
-        float    nrc_learning_rate    = 0.01f;
+        float    nrc_learning_rate    = 0.001f;
         uint32_t nrc_batch_size       = 1024;
     };
 
@@ -35,6 +35,15 @@ public:
         uint32_t batch_size;
         uint32_t activations_stride;
         uint32_t activations_offset;
+    };
+
+    struct AdamConstants
+    {
+        float    learningRate;
+        float    beta1;
+        float    beta2;
+        float    epsilon;
+        uint32_t t; // Current training step/frame count
     };
     RenderOptions convertOptions(RenderOptionList const &options) noexcept;
 
@@ -56,13 +65,16 @@ private:
     GfxBuffer constants_buffer_;
     GfxBuffer activations_buffer_;
     GfxBuffer incoming_gradients_;
+    GfxBuffer adam_constants_buffer_;
 
     GfxProgram nrc_inference_program_;
     GfxProgram nrc_train_program_;
     GfxProgram nrc_loss_program_;
+    GfxProgram nrc_adam_program_;
     GfxKernel  inference_kernel_;
     GfxKernel  train_kernel_;
     GfxKernel  nrc_loss_kernel_;
+    GfxKernel  adam_kernel_;
     GfxKernel  update_weights_kernel_; // Optional if integrated into train
 
     GfxTexture output_texture_; // Stores NRC inference result
@@ -77,6 +89,7 @@ private:
     GfxKernel  rt_kernel_;
     GfxSbt     rt_sbt_;
     GfxBuffer  ray_camera_buffer_;
+    uint32_t   step_count = 0;
 
     RenderOptions options;
 

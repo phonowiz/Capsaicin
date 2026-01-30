@@ -146,6 +146,10 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     nrc_inference_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_inference");
     nrc_train_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_train");
     nrc_loss_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_loss");
+    nrc_adam_program_ = capsaicin.createProgram("render_techniques/neural_radiance_cache/nrc_adam_optimizer");
+
+    adam_constants_buffer_ = gfxCreateBuffer<AdamConstants>(gfx_, 1, nullptr, kGfxCpuAccess_Write);
+    adam_constants_buffer_.setName("NRC_AdamConstants");
 
     return initKernels(capsaicin);
 }
@@ -156,6 +160,7 @@ bool NeuralRadianceCache::initKernels(CapsaicinInternal const &capsaicin) noexce
     inference_kernel_ = gfxCreateComputeKernel(gfx_, nrc_inference_program_, "NRCInference");
     train_kernel_ = gfxCreateComputeKernel(gfx_, nrc_train_program_, "NRCTrain");
     nrc_loss_kernel_ = gfxCreateComputeKernel(gfx_, nrc_loss_program_, "NRCLoss");
+    adam_kernel_ = gfxCreateComputeKernel(gfx_, nrc_adam_program_, "main");
     
     // Init RT
     // Need setupRTKernel equivalent
@@ -194,7 +199,7 @@ bool NeuralRadianceCache::initKernels(CapsaicinInternal const &capsaicin) noexce
     GfxKernel sbt_kernels[] {rt_kernel_};
     rt_sbt_ = gfxCreateSbt(gfx_, sbt_kernels, ARRAYSIZE(sbt_kernels), entry_count);
     
-    return !!nrc_inference_program_ && !!nrc_train_program_ && !!nrc_loss_program_ && !!rt_program_;
+    return !!nrc_inference_program_ && !!nrc_train_program_ && !!nrc_loss_program_ && !!nrc_adam_program_ && !!rt_program_;
 }
 
 void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
@@ -330,6 +335,27 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
         uint32_t batch_size       = 1920 * 1080;
         uint32_t num_groups_train = (batch_size + 63) / 64; // Block size is 64 in nrc_train.comp
         gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
+
+        // 4. Dispatch Adam Optimizer
+        step_count++;
+        AdamConstants *adam_constants = gfxBufferGetData<AdamConstants>(gfx_, adam_constants_buffer_);
+        adam_constants->learningRate = options.nrc_learning_rate;
+        adam_constants->beta1        = 0.9f;
+        adam_constants->beta2        = 0.99f;
+        adam_constants->epsilon      = 1e-8f;
+        adam_constants->t            = step_count;
+
+        gfxProgramSetParameter(gfx_, nrc_adam_program_, "g_AdamConstants", adam_constants_buffer_);
+        gfxProgramSetParameter(gfx_, nrc_adam_program_, "g_Weights", weights_buffer_);
+        gfxProgramSetParameter(gfx_, nrc_adam_program_, "g_Gradients", gradients_buffer_);
+        gfxProgramSetParameter(gfx_, nrc_adam_program_, "g_Momentum1", momentum1_buffer_);
+        gfxProgramSetParameter(gfx_, nrc_adam_program_, "g_Momentum2", momentum2_buffer_);
+
+        uint32_t num_weights = 7 * 64 * 64; // TOTAL_WEIGHT_ELEMENTS / 2 because we use float16_t2
+        uint32_t weight_pairs = num_weights / 2;
+        uint32_t num_groups_adam = (weight_pairs + 255) / 256;
+        gfxCommandBindKernel(gfx_, adam_kernel_);
+        gfxCommandDispatch(gfx_, num_groups_adam, 1, 1);
     }
 
 
@@ -392,9 +418,12 @@ void NeuralRadianceCache::terminate() noexcept
     gfxDestroyProgram(gfx_, nrc_inference_program_);
     gfxDestroyProgram(gfx_, nrc_train_program_);
     gfxDestroyProgram(gfx_, nrc_loss_program_);
+    gfxDestroyProgram(gfx_, nrc_adam_program_);
     gfxDestroyKernel(gfx_, inference_kernel_);
     gfxDestroyKernel(gfx_, train_kernel_);
     gfxDestroyKernel(gfx_, nrc_loss_kernel_);
+    gfxDestroyKernel(gfx_, adam_kernel_);
+    gfxDestroyBuffer(gfx_, adam_constants_buffer_);
     
     gfxDestroyProgram(gfx_, rt_program_);
     gfxDestroyKernel(gfx_, rt_kernel_);
