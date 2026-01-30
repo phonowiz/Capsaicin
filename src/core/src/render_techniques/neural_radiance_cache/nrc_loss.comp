@@ -1,0 +1,75 @@
+/**********************************************************************
+NRC Loss Kernel - Generates g_IncomingGradients
+********************************************************************/
+
+#include "nrc_common.hlsl"
+
+typedef half  float16_t;
+typedef half2 float16_t2;
+
+#define LAYER_WIDTH_HALVES 32 // 64 neurons
+
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+
+// SRVs
+StructuredBuffer<TrainingSample> g_TrainingSamples : register(t2);
+StructuredBuffer<uint>           g_Counters        : register(t3);
+// We read the final layer's activations from the forward pass
+StructuredBuffer<float16_t2>     g_Activations     : register(t4); 
+
+// UAVs
+// This feeds directly into the "NRCTrain" shader we wrote
+RWStructuredBuffer<float16_t2>   g_IncomingGradients : register(u7);
+
+[numthreads(64, 1, 1)]
+void NRCLoss(uint3 dtid : SV_DispatchThreadID)
+{
+    const uint global_sample_idx = dtid.x;
+    const uint total_samples = g_Counters[1];
+
+    if (global_sample_idx >= total_samples)
+        return;
+
+    // 1. Get Ground Truth (Target) from the Path Tracer
+    TrainingSample sample = g_TrainingSamples[global_sample_idx];
+    float3 target_radiance = sample.target_radiance.rgb;
+
+    // 2. Get Network Prediction (from the last layer of the forward pass)
+    // In our 64-wide net, the RGB results are usually the first 3 neurons
+    // of the final layer (Layer 7).
+    uint final_layer_offset = 7 * g_NRCConstants.activations_stride;
+    uint base_idx = (final_layer_offset + global_sample_idx) * LAYER_WIDTH_HALVES;
+    
+    float16_t2 rg_pred = g_Activations[base_idx + 0];
+    float16_t  b_pred  = g_Activations[base_idx + 1].x;
+    float3 prediction = float3((float)rg_pred.x, (float)rg_pred.y, (float)b_pred);
+
+    // 3. Compute Gradient of Relative L2 Loss
+    // dLoss/dy = 2 * (y - T) / (y^2 + epsilon)
+    // We add a small epsilon to avoid division by zero
+    float epsilon = 0.01f;
+    float3 diff = prediction - target_radiance;
+    float3 denom = (prediction * prediction) + epsilon;
+    float3 grad_f32 = (2.0f * diff) / denom;
+
+    // 4. Write to Incoming Gradients
+    // We must zero out all 64 neuron gradients, then set the first 3 to our RGB gradient
+    [unroll]
+    for (int i = 0; i < LAYER_WIDTH_HALVES; i++)
+    {
+        if (i == 0) // Neurons 0 and 1 (Red and Green)
+        {
+            g_IncomingGradients[global_sample_idx * LAYER_WIDTH_HALVES + i] = 
+                float16_t2((float16_t)grad_f32.r, (float16_t)grad_f32.g);
+        }
+        else if (i == 1) // Neurons 2 and 3 (Blue and Unused)
+        {
+            g_IncomingGradients[global_sample_idx * LAYER_WIDTH_HALVES + i] = 
+                float16_t2((float16_t)grad_f32.b, (float16_t)0.0);
+        }
+        else // Neurons 4-63 have no direct loss (they are hidden)
+        {
+            g_IncomingGradients[global_sample_idx * LAYER_WIDTH_HALVES + i] = (float16_t2)0;
+        }
+    }
+}

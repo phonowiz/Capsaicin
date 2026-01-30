@@ -59,8 +59,10 @@ private:
 
     GfxProgram nrc_inference_program_;
     GfxProgram nrc_train_program_;
+    GfxProgram nrc_loss_program_;
     GfxKernel  inference_kernel_;
     GfxKernel  train_kernel_;
+    GfxKernel  nrc_loss_kernel_;
     GfxKernel  update_weights_kernel_; // Optional if integrated into train
 
     GfxTexture output_texture_; // Stores NRC inference result
