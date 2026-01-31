@@ -19,7 +19,6 @@ StructuredBuffer<Vertex> g_VertexBuffer;
 uint g_VertexDataIndex;
 StructuredBuffer<Material> g_MaterialBuffer;
 
-RWTexture2D<float4> g_AccumulationBuffer;
 RWTexture2D<float4> g_OutputBuffer;
 
 RaytracingAccelerationStructure g_Scene;

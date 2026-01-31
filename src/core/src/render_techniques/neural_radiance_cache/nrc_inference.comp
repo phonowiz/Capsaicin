@@ -21,7 +21,6 @@ StructuredBuffer<uint> g_Counters : register(t3);
 // UAVs
 RWTexture2D<float4> g_OutputTexture : register(u1);
 RWStructuredBuffer<float16_t2> g_Activations : register(u2);
-RWTexture2D<float4> g_AccumulationBuffer : register(u6);
 
 groupshared float16_t2 s_activations[LAYER_WIDTH_HALVES][BLOCK_PIXELS];
 groupshared float16_t2 s_weights[LAYER_WIDTH_HALVES * 64];
@@ -123,17 +122,11 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     // L_total = L_direct + Throughput * (Albedo * Pred)
     float3 l_indirect = (radiance_pred * query.albedo.rgb);// * query.throughput.rgb;
     
-    float4 acc = g_AccumulationBuffer[query.pixel_coord];
-    uint sample_count = asuint(acc.w);
+    // Read previous direct/short-path radiance from the output texture
+    float3 direct_radiance = g_OutputTexture[query.pixel_coord].rgb;
     
-    if (sample_count > 0)
-    {
-        // Reconstruct final pixel value
-        float3 final_radiance = acc.xyz + l_indirect;
-        
-        g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
-        
-        // If we want to store the result back for temporal stability:
-        //g_AccumulationBuffer[query.pixel_coord] = float4(final_radiance, asfloat(sample_count));
-    }
+    // Reconstruct final pixel value
+    float3 final_radiance = direct_radiance + l_indirect;
+    
+    g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
 }

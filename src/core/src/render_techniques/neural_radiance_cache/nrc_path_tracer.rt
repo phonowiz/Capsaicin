@@ -55,20 +55,6 @@ void NRCPTRaygen()
 
     tracePathNRC(ray, randomStratified, randomNG, 0, g_BounceRRCount, g_BounceCount, 0.0f.xxx, 1.0f.xxx, radiance, isTraining, did);
 
-    // Accumulate Primary/Direct (whatever tracePathNRC gathered before quitting)
-    if (g_Accumulate != 0)
-    {
-         float4 accumulator = g_AccumulationBuffer[did];
-         uint previousCount = asuint(accumulator.w);
-         uint sampleCount = previousCount + 1;
-         radiance = accumulator.xyz + ((radiance - accumulator.xyz) / (float)sampleCount);
-         g_AccumulationBuffer[did] = float4(radiance, asfloat(sampleCount));
-    }
-    else
-    {
-         g_AccumulationBuffer[did] = float4(radiance, 1.0f);
-    }
-    
     g_OutputBuffer[did] = float4(radiance, 1.0f);
 }
 

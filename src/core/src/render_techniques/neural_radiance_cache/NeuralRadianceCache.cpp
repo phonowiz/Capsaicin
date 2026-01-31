@@ -138,7 +138,6 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     constants_buffer_.setName("NRC_Constants");
 
     output_texture_ = capsaicin.createRenderTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, "NRC_Output");
-    accumulation_buffer_ = capsaicin.createRenderTexture(DXGI_FORMAT_R32G32B32A32_FLOAT, "NRC_AccumulationBuffer");
     
     ray_camera_buffer_ = gfxCreateBuffer<RayCamera>(gfx_, 1, nullptr, kGfxCpuAccess_Write);
     ray_camera_buffer_.setName("NRC_RayCamera");
@@ -251,15 +250,11 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_TextureSampler", capsaicin.getLinearWrapSampler());
     
     // Output
-    if (accumulation_buffer_.getWidth() != renderDimensions.x || accumulation_buffer_.getHeight() != renderDimensions.y)
+    if (output_texture_.getWidth() != renderDimensions.x || output_texture_.getHeight() != renderDimensions.y)
     {
-        gfxDestroyTexture(gfx_, accumulation_buffer_);
-        accumulation_buffer_ = capsaicin.createRenderTexture(DXGI_FORMAT_R32G32B32_FLOAT, "NRC_AccumulationBuffer");
-        
         gfxDestroyTexture(gfx_, output_texture_);
         output_texture_ = capsaicin.createRenderTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, "NRC_Output");
     }
-    gfxProgramSetParameter(gfx_, rt_program_, "g_AccumulationBuffer", accumulation_buffer_);
     
     gfxProgramSetParameter(gfx_, rt_program_, "g_OutputBuffer", capsaicin.getSharedTexture("Color"));
     
@@ -294,7 +289,6 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
        gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);         // t3
        gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", capsaicin.getSharedTexture("Color"));     // u1
        gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);     // u2
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_AccumulationBuffer", accumulation_buffer_); // u6
     
        uint32_t num_queries = renderDimensions.x * renderDimensions.y;
        uint32_t num_groups = (num_queries + 127) / 128;
@@ -413,7 +407,6 @@ void NeuralRadianceCache::terminate() noexcept
     gfxDestroyBuffer(gfx_, incoming_gradients_);
 
     gfxDestroyTexture(gfx_, output_texture_);
-    gfxDestroyTexture(gfx_, accumulation_buffer_);
     
     gfxDestroyProgram(gfx_, nrc_inference_program_);
     gfxDestroyProgram(gfx_, nrc_train_program_);
