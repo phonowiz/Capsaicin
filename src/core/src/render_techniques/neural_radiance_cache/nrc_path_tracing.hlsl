@@ -238,7 +238,8 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             trainingSample.target_radiance.xyzw = float4((radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f), 1.0f);
             g_TrainingSamples_RT[sampleIdx] = trainingSample;
 
-            //radiance  = 0.0f.xxx;
+            // Set final radiance to prefix only so inference pass can add the prediction
+            radiance = radianceAtCachePoint;
         }
     }
 }

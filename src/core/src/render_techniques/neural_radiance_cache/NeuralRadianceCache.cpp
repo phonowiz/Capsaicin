@@ -120,7 +120,7 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     training_samples_ = gfxCreateBuffer(gfx_, max_training_samples * struct_size, nullptr, kGfxCpuAccess_None);
     training_samples_.setName("NRC_TrainingSamples");
 
-    activations_buffer_ = gfxCreateBuffer(gfx_, 7 * max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
+    activations_buffer_ = gfxCreateBuffer(gfx_, 8 * max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
     activations_buffer_.setName("NRC_Activations");
 
     incoming_gradients_ = gfxCreateBuffer(gfx_, max_training_samples * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
@@ -223,6 +223,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 5); // Hardcoded for now
     gfxProgramSetParameter(gfx_, rt_program_, "g_BounceRRCount", 2);
     gfxProgramSetParameter(gfx_, rt_program_, "g_Accumulate", 1);
+    gfxProgramSetParameter(gfx_, rt_program_, "g_TrainActive", options.nrc_train_active ? 1 : 0);
     
     auto const stratified_sampler = capsaicin.getComponent<StratifiedSampler>();
     auto const rng = capsaicin.getComponent<RandomNumberGenerator>();
@@ -268,27 +269,44 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     // 2. Dispatch Inference
     if (options.nrc_inference_active)
     {
-       // Update Constants
-       NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
-       constants->num_training_samples = 20736;
-       constants->num_inference_queries = renderDimensions.x * renderDimensions.y;
-       constants->learning_rate = options.nrc_learning_rate;
-       constants->batch_size = options.nrc_batch_size;
-       constants->activations_stride = 1920 * 1080; // max_queries
-       constants->activations_offset = 0;
+       // Pass 1: Regular Inference (Screen Pixels)
+       {
+           NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
+           constants->num_training_samples = 20736;
+           constants->num_inference_queries = renderDimensions.x * renderDimensions.y;
+           constants->learning_rate = options.nrc_learning_rate;
+           constants->batch_size = options.nrc_batch_size;
+           constants->activations_stride = 1920 * 1080;
+           constants->activations_offset = 0;
+           constants->is_training_pass = 0; // Regular inference
 
-       // Bind Inference Parameters
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);   // b0
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);           // t1
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_); // t0
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);         // t3
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", capsaicin.getSharedTexture("Color"));     // u1
-       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);     // u2
-    
-       uint32_t num_queries = renderDimensions.x * renderDimensions.y;
-       uint32_t num_groups = (num_queries + 127) / 128;
-       gfxCommandBindKernel(gfx_, inference_kernel_);
-       gfxCommandDispatch(gfx_, num_groups, 1, 1);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Weights", weights_buffer_);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", inference_queries_);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Counters", counters_buffer_);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_OutputTexture", capsaicin.getSharedTexture("Color"));
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_Activations", activations_buffer_);
+        
+           uint32_t num_queries = renderDimensions.x * renderDimensions.y;
+           uint32_t num_groups = (num_queries + 127) / 128;
+           gfxCommandBindKernel(gfx_, inference_kernel_);
+           gfxCommandDispatch(gfx_, num_groups, 1, 1);
+       }
+
+       // Pass 2: Training Sample Inference (Hidden Vertices)
+       if (options.nrc_train_active)
+       {
+           NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
+           constants->is_training_pass = 1; // Training pass - log activations
+
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
+           gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", training_samples_); // Read from training samples!
+           
+           uint32_t num_samples = 20736;
+           uint32_t num_groups = (num_samples + 127) / 128;
+           gfxCommandBindKernel(gfx_, inference_kernel_);
+           gfxCommandDispatch(gfx_, num_groups, 1, 1);
+       }
     }
 
     // 2.5 Dispatch Loss

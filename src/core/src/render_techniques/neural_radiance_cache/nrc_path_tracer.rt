@@ -49,9 +49,8 @@ void NRCPTRaygen()
 
     float3 radiance = 0.0f;
     
-    // Training Ray Check: 1 in N pixels? Or random?
-    // Let's do 1% of rays are training rays.
-    bool isTraining = (randomNG.rand() < 0.01f);
+    // Training Ray Check: Only trace long paths if training is enabled in the UI
+    bool isTraining = (g_TrainActive != 0) && (randomNG.rand() < 0.01f);
 
     tracePathNRC(ray, randomStratified, randomNG, 0, g_BounceRRCount, g_BounceCount, 0.0f.xxx, 1.0f.xxx, radiance, isTraining, did);
 

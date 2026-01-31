@@ -11,6 +11,7 @@ uint g_BounceRRCount;
 uint g_SampleCount;
 uint g_Accumulate;
 uint g_FrameIndex;
+uint g_TrainActive;
 
 StructuredBuffer<Instance> g_InstanceBuffer;
 StructuredBuffer<float3x4> g_TransformBuffer;

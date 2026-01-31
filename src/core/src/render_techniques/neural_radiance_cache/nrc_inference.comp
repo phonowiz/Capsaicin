@@ -32,7 +32,7 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     const uint warp_id = gtid.x / 32;
     const uint global_pixel_idx = dtid.x;
 
-    uint count = g_Counters[0];
+    uint count = (g_NRCConstants.is_training_pass) ? g_Counters[1] : g_Counters[0];
     if (global_pixel_idx >= count)
         return;
 
@@ -53,7 +53,7 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     for (int layer = 0; layer < 6; layer++)
     {
         // LOG ACTIVATIONS: Only do this for training samples to save bandwidth!
-        //if (g_NRCConstants.is_training_pass)
+        if (g_NRCConstants.is_training_pass)
         {
             for (int k = 0; k < LAYER_WIDTH_HALVES; k++)
             {
@@ -98,6 +98,17 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
         GroupMemoryBarrierWithGroupSync();
     }
 
+    // LOG FINAL LAYER ACTIVATIONS
+    if (g_NRCConstants.is_training_pass)
+    {
+        [unroll]
+        for (int k = 0; k < LAYER_WIDTH_HALVES; k++)
+        {
+            uint act_idx = (6 * g_NRCConstants.activations_stride + global_pixel_idx) * LAYER_WIDTH_HALVES + k;
+            g_Activations[act_idx] = s_activations[k][pixel_in_block];
+        }
+    }
+
     // --- 2. Final Output Layer Reduction (64 -> 3) ---
     // At this point, s_activations contains the final hidden layer (64 units).
     // We now multiply by the last weight matrix (64x3).
@@ -117,6 +128,14 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
 
     // Standard Radiance output clamping
     radiance_pred = max(0.0f, radiance_pred);
+
+    // LOG PREDICTION (Layer 7)
+    if (g_NRCConstants.is_training_pass)
+    {
+        uint act_idx = (7 * g_NRCConstants.activations_stride + global_pixel_idx) * LAYER_WIDTH_HALVES;
+        g_Activations[act_idx + 0] = float16_t2((float16_t)radiance_pred.r, (float16_t)radiance_pred.g);
+        g_Activations[act_idx + 1] = float16_t2((float16_t)radiance_pred.b, (float16_t)0.0);
+    }
     
     // --- 3. Radiance Reconstruction ---
     // L_total = L_direct + Throughput * (Albedo * Pred)

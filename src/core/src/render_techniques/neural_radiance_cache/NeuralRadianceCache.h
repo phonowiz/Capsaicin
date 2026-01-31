@@ -35,6 +35,7 @@ public:
         uint32_t batch_size;
         uint32_t activations_stride;
         uint32_t activations_offset;
+        uint32_t is_training_pass;
     };
 
     struct AdamConstants
