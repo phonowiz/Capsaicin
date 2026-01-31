@@ -19,7 +19,7 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 // Extra Buffers for NRC
 RWStructuredBuffer<InferenceQuery> g_InferenceQueries_RT : register(u5);
-RWStructuredBuffer<TrainingSample> g_TrainingSamples_RT : register(u6);
+RWStructuredBuffer<InferenceQuery> g_TrainingSamples_RT : register(u6);
 RWStructuredBuffer<uint> g_Counters : register(u7); // [0]=Queries, [1]=Samples
 
 // Reuse standard path tracing functions, but overload the main trace loop.
@@ -73,12 +73,16 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     const uint kTrainingBounce = 2; // Fixed for now
 
     // State for training
-    TrainingSample trainingSample; 
+    InferenceQuery trainingSample = (InferenceQuery)0; 
     trainingSample.pos = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.dir = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.roughness = 0.0f;
+    trainingSample.albedo = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.target_radiance = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.throughput = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.pixel_coord = uint2(0, 0);
+    trainingSample.roughness = 0.0f;
+    trainingSample.padding = 0.0f;
     bool trainingVertexFound = false;
     float3 radianceAtCachePoint = 0.0f.xxx;
     float3 throughputAtCachePoint = 1.0f.xxx;
@@ -98,13 +102,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             
             if (queryIdx < 1920*1080) // Safety
             {
-                InferenceQuery q;
+                InferenceQuery q = (InferenceQuery)0;
                 q.pos = float4(ray.origin, 0.f);
                 q.dir = float4(ray.direction, 0.f);
                 q.normal = float4(normal, 0.f); // Approx
                 q.roughness = 0.5f; // Placeholder
                 q.albedo = float4(1,1,1,0); // Used for factorization in kernel (simplified)
                 q.pixel_coord = pixelCoord;
+                q.target_radiance = 0.0f.xxxx;
                 q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
                 g_InferenceQueries_RT[queryIdx] = q;
             }
@@ -195,13 +200,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         InterlockedAdd(g_Counters[0], 1, queryIdx);
                         if (queryIdx < 1920*1080) // Safety
                         {
-                            InferenceQuery q;
+                            InferenceQuery q = (InferenceQuery)0;
                             q.pos = float4(iData.position, 0.f);
                             q.dir = float4(ray.direction, 0.f);
                             q.normal = float4(iData.normal, 0.f);
                             q.roughness = evalMaterial.roughness;
                             q.albedo = float4(evalMaterial.albedo, 0.f);
                             q.pixel_coord = pixelCoord;
+                            q.target_radiance = 0.0f.xxxx;
                             q.throughput = float4(throughput, 0.f);
                             g_InferenceQueries_RT[queryIdx] = q;
                         }

@@ -97,24 +97,18 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     uint32_t max_queries = 1920 * 1080;
     uint32_t max_training_samples = 20736; // 1% of 1920 * 1080
 
-    struct TrainingSample
-    {
-        glm::float4 pos;
-        glm::float4 dir;
-        glm::float4 normal;
-        glm::float4 target_radiance;
-        float roughness;
-    };
 
     struct InferenceQuery
     {
-        float4 pos;
-        float4 dir;
-        float4 normal;
-        float4 albedo;
-        float4 throughput;
-        uint2  pixel_coord;
-        float  roughness;
+        float4      pos;
+        float4      dir;
+        float4      normal;
+        float4      albedo;
+        float4      target_radiance;
+        float4      throughput;
+        uint2       pixel_coord;
+        float       roughness;
+        float       padding;
     };
 
     uint32_t struct_size = sizeof(InferenceQuery);
@@ -122,7 +116,7 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     inference_queries_ = gfxCreateBuffer(gfx_, max_queries * struct_size, nullptr, kGfxCpuAccess_None);
     inference_queries_.setName("NRC_InferenceQueries");
     
-    struct_size = sizeof(TrainingSample);
+    struct_size = sizeof(InferenceQuery);
     training_samples_ = gfxCreateBuffer(gfx_, max_training_samples * struct_size, nullptr, kGfxCpuAccess_None);
     training_samples_.setName("NRC_TrainingSamples");
 

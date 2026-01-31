@@ -57,7 +57,7 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
         {
             for (int k = 0; k < LAYER_WIDTH_HALVES; k++)
             {
-                uint act_idx = (layer * g_NRCConstants.activations_stride + g_NRCConstants.activations_offset + global_pixel_idx) * LAYER_WIDTH_HALVES + k;
+                uint act_idx = (layer * g_NRCConstants.activations_stride + global_pixel_idx) * LAYER_WIDTH_HALVES + k;
                 g_Activations[act_idx] = s_activations[k][pixel_in_block];
             }
         }

@@ -26,24 +26,18 @@ struct NRCConstants
 };
 
 // Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64
+// Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64
 struct InferenceQuery
 {
     float4 pos;
     float4 dir;
     float4 normal;
     float4 albedo;
+    float4 target_radiance;
     float4 throughput;
     uint2  pixel_coord;
     float  roughness;
-};
-
-struct TrainingSample
-{
-    float4 pos;
-    float4 dir;
-    float4 normal;
-    float4 target_radiance;
-    float roughness;
+    float  padding;
 };
 
 // --- Helper Functions ---
@@ -111,7 +105,7 @@ void EncodeInputs(InferenceQuery query, out float features[NETWORK_WIDTH])
     features[idx++] = 1.0;
 }
 
-void EncodeInputTraining(TrainingSample sample, out NrcFloat features[NETWORK_WIDTH])
+void EncodeInputTraining(InferenceQuery sample, out NrcFloat features[NETWORK_WIDTH])
 {
     InferenceQuery q;
     q.pos = sample.pos;
