@@ -223,7 +223,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
         // Limit to a reasonable batch size (e.g. 4096) to prevent overflow/TDR
         // Also checks against buffer size.
         InterlockedAdd(g_Counters[1], 1, sampleIdx);
-        if (sampleIdx < 1920 * 1080) 
+        if (sampleIdx < 20736) 
         {
             //radiance = float3(1.0f, 0.0f, 0.0f);
              //what we are doing here is isolating the suffix radiance from the prefix radiance.

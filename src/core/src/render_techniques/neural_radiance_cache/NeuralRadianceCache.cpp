@@ -95,6 +95,7 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
 
     // Queries/Samples
     uint32_t max_queries = 1920 * 1080;
+    uint32_t max_training_samples = 20736; // 1% of 1920 * 1080
 
     struct TrainingSample
     {
@@ -122,13 +123,13 @@ bool NeuralRadianceCache::init(CapsaicinInternal const &capsaicin) noexcept
     inference_queries_.setName("NRC_InferenceQueries");
     
     struct_size = sizeof(TrainingSample);
-    training_samples_ = gfxCreateBuffer(gfx_, max_queries * struct_size, nullptr, kGfxCpuAccess_None);
+    training_samples_ = gfxCreateBuffer(gfx_, max_training_samples * struct_size, nullptr, kGfxCpuAccess_None);
     training_samples_.setName("NRC_TrainingSamples");
 
     activations_buffer_ = gfxCreateBuffer(gfx_, 7 * max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
     activations_buffer_.setName("NRC_Activations");
 
-    incoming_gradients_ = gfxCreateBuffer(gfx_, max_queries * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
+    incoming_gradients_ = gfxCreateBuffer(gfx_, max_training_samples * 64 * sizeof(uint16_t), nullptr, kGfxCpuAccess_None);
     incoming_gradients_.setName("NRC_IncomingGradients");
     
     counters_buffer_ = gfxCreateBuffer(gfx_, 2 * sizeof(uint32_t), nullptr, kGfxCpuAccess_None); 
@@ -275,7 +276,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     {
        // Update Constants
        NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
-       constants->num_training_samples = 1920 * 1080; // Full screen batch size
+       constants->num_training_samples = 20736;
        constants->num_inference_queries = renderDimensions.x * renderDimensions.y;
        constants->learning_rate = options.nrc_learning_rate;
        constants->batch_size = options.nrc_batch_size;
@@ -305,7 +306,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
         gfxProgramSetParameter(gfx_, nrc_loss_program_, "g_Activations", activations_buffer_);
         gfxProgramSetParameter(gfx_, nrc_loss_program_, "g_IncomingGradients", incoming_gradients_);
 
-        uint32_t batch_size = 1920 * 1080;
+        uint32_t batch_size = 20736;
         uint32_t num_groups_loss = (batch_size + 63) / 64;
         gfxCommandBindKernel(gfx_, nrc_loss_kernel_);
         gfxCommandDispatch(gfx_, num_groups_loss, 1, 1);
@@ -326,7 +327,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
         gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Activations", activations_buffer_);     // u2
 
         gfxCommandBindKernel(gfx_, train_kernel_);
-        uint32_t batch_size       = 1920 * 1080;
+        uint32_t batch_size       = 20736;
         uint32_t num_groups_train = (batch_size + 63) / 64; // Block size is 64 in nrc_train.comp
         gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
 

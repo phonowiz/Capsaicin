@@ -64,6 +64,9 @@ void NRCTrain(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, u
 {
     const int t_idx = gtid.x;
     const uint total_samples = g_Counters[1];
+
+    if(total_samples == 0)
+        return;
     const int global_sample_idx = dtid.x;
 
     // --- STRIDING LOGIC EXPLAINED ---
