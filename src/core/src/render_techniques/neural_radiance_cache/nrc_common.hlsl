@@ -23,6 +23,7 @@ struct NRCConstants
     uint batch_size;
     uint activations_stride;
     uint activations_offset;
+    uint is_training_pass;
 };
 
 // Inference Inputs: [Pos (3), Dir (3), Supplemental (Normal, Roughness?)] -> Encoded to 64

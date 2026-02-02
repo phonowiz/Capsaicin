@@ -273,6 +273,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
        constants->batch_size = options.nrc_batch_size;
        constants->activations_stride = 1920 * 1080; // max_queries
        constants->activations_offset = 0;
+       constants->is_training_pass = 0;
 
        // Bind Inference Parameters
        gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);   // b0
@@ -288,6 +289,25 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
        gfxCommandDispatch(gfx_, num_groups, 1, 1);
     }
 
+    // 2.5 Dispatch Forward Pass for Training Samples (to get activations)
+    if (options.nrc_train_active)
+    {
+       NRCConstants *constants = gfxBufferGetData<NRCConstants>(gfx_, constants_buffer_);
+       // Re-update constants for training pass
+       constants->is_training_pass = 1;
+       
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_NRCConstants", constants_buffer_);
+       gfxProgramSetParameter(gfx_, nrc_inference_program_, "g_InferenceQueries", training_samples_); // REBIND to training samples
+       
+       // Assuming 'training_samples_' has same size/layout as inference queries for safety, or at least sufficient for max samples
+       uint32_t num_training_samples = 20736;
+       // Note: counters_buffer_[1] has actual count, but compute shader guards against out of bounds.
+       uint32_t num_groups_train_infer = (num_training_samples + 127) / 128;
+       
+       gfxCommandBindKernel(gfx_, inference_kernel_);
+       gfxCommandDispatch(gfx_, num_groups_train_infer, 1, 1);
+    }
+
     // 2.5 Dispatch Loss
     if (options.nrc_train_active)
     {
@@ -297,7 +317,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
         gfxProgramSetParameter(gfx_, nrc_loss_program_, "g_Activations", activations_buffer_);
         gfxProgramSetParameter(gfx_, nrc_loss_program_, "g_IncomingGradients", incoming_gradients_);
 
-        uint32_t batch_size = 1920 * 1080;
+        uint32_t batch_size = 20736;
         uint32_t num_groups_loss = (batch_size + 63) / 64;
         gfxCommandBindKernel(gfx_, nrc_loss_kernel_);
         gfxCommandDispatch(gfx_, num_groups_loss, 1, 1);
@@ -318,7 +338,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
         gfxProgramSetParameter(gfx_, nrc_train_program_, "g_Activations", activations_buffer_);     // u2
 
         gfxCommandBindKernel(gfx_, train_kernel_);
-        uint32_t batch_size       = 1920 * 1080;
+        uint32_t batch_size       = 20736;
         uint32_t num_groups_train = (batch_size + 63) / 64; // Block size is 64 in nrc_train.comp
         gfxCommandDispatch(gfx_, num_groups_train, 1, 1);
 
