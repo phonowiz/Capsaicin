@@ -19,7 +19,7 @@ Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 // Extra Buffers for NRC
 RWStructuredBuffer<InferenceQuery> g_InferenceQueries_RT : register(u5);
-RWStructuredBuffer<TrainingSample> g_TrainingSamples_RT : register(u6);
+RWStructuredBuffer<InferenceQuery> g_TrainingSamples_RT : register(u6);
 RWStructuredBuffer<uint> g_Counters : register(u7); // [0]=Queries, [1]=Samples
 
 // Reuse standard path tracing functions, but overload the main trace loop.
@@ -73,12 +73,16 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     const uint kTrainingBounce = 2; // Fixed for now
 
     // State for training
-    TrainingSample trainingSample; 
+    // State for training
+    InferenceQuery trainingSample; 
     trainingSample.pos = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.dir = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
     trainingSample.roughness = 0.0f;
     trainingSample.target_radiance = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.albedo = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.throughput = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    trainingSample.pixel_coord = uint2(0, 0);
     bool trainingVertexFound = false;
     float3 radianceAtCachePoint = 0.0f.xxx;
     float3 throughputAtCachePoint = 1.0f.xxx;
@@ -106,6 +110,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 q.albedo = float4(1,1,1,0); // Used for factorization in kernel (simplified)
                 q.pixel_coord = pixelCoord;
                 q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
+                q.target_radiance = 0.0f.xxxx;
                 g_InferenceQueries_RT[queryIdx] = q;
             }
             break; // Stop tracing
@@ -182,6 +187,11 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                             trainingSample.dir = float4(ray.direction, 0.f);
                             trainingSample.normal = float4(iData.normal, 0.f);
                             trainingSample.roughness = 0.5f;
+                            // Use dummy values or actual material props if desired for training input? 
+                            // For now keeping it simple as before, but using the struct fields.
+                            trainingSample.albedo = float4(0,0,0,0); 
+                            trainingSample.pixel_coord = pixelCoord;
+                            trainingSample.throughput = float4(throughput, 0.f);
                             trainingVertexFound = true;
                             radianceAtCachePoint = radiance;
                             throughputAtCachePoint = throughput;
@@ -203,6 +213,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                             q.albedo = float4(evalMaterial.albedo, 0.f);
                             q.pixel_coord = pixelCoord;
                             q.throughput = float4(throughput, 0.f);
+                            q.target_radiance = 0.0f.xxxx;
                             g_InferenceQueries_RT[queryIdx] = q;
                         }
                         break;

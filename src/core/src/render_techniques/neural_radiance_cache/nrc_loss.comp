@@ -12,7 +12,7 @@ typedef half2 float16_t2;
 ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
 
 // SRVs
-StructuredBuffer<TrainingSample> g_TrainingSamples : register(t2);
+StructuredBuffer<InferenceQuery> g_TrainingSamples : register(t2);
 StructuredBuffer<uint>           g_Counters        : register(t3);
 // We read the final layer's activations from the forward pass
 StructuredBuffer<float16_t2>     g_Activations     : register(t4); 
@@ -31,7 +31,7 @@ void NRCLoss(uint3 dtid : SV_DispatchThreadID)
         return;
 
     // 1. Get Ground Truth (Target) from the Path Tracer
-    TrainingSample sample = g_TrainingSamples[global_sample_idx];
+    InferenceQuery sample = g_TrainingSamples[global_sample_idx];
     float3 target_radiance = sample.target_radiance.rgb;
 
     // 2. Get Network Prediction (from the last layer of the forward pass)
