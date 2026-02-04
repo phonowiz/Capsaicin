@@ -217,7 +217,7 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
     gfxProgramSetParameter(gfx_, rt_program_, "g_BufferDimensions", renderDimensions);
     gfxProgramSetParameter(gfx_, rt_program_, "g_FrameIndex", capsaicin.getFrameIndex());
     gfxProgramSetParameter(gfx_, rt_program_, "g_RayCamera", cameraData);
-    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 5); // Hardcoded for now
+    gfxProgramSetParameter(gfx_, rt_program_, "g_BounceCount", 10); // Hardcoded for now
     gfxProgramSetParameter(gfx_, rt_program_, "g_BounceRRCount", 2);
     gfxProgramSetParameter(gfx_, rt_program_, "g_Accumulate", 1);
     

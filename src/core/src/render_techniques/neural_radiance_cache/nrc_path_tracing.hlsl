@@ -63,6 +63,9 @@ float getPrimaryAreaSpread(
 }
 
 
+
+#define MAX_TRAINING_VERTICES 12
+
 template<typename RadianceT>
 void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout Random randomNG,
     uint currentBounce, uint minBounces, uint maxBounces, float3 normal, float3 throughput, inout RadianceT radiance,
@@ -74,18 +77,9 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
 
     // State for training
     // State for training
-    InferenceQuery trainingSample; 
-    trainingSample.pos = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.dir = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.normal = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.roughness = 0.0f;
-    trainingSample.target_radiance = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.albedo = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.throughput = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    trainingSample.pixel_coord = uint2(0, 0);
-    bool trainingVertexFound = false;
-    float3 radianceAtCachePoint = 0.0f.xxx;
-    float3 throughputAtCachePoint = 1.0f.xxx;
+    uint trainingVertexCount = 0;
+    InferenceQuery trainingVertices[MAX_TRAINING_VERTICES];
+
 
     float samplePDF = 1.0f;
     float primaryArea = 0.0f;
@@ -124,13 +118,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
              // Miss
              shadePathMiss(ray, bounce, randomNG, normal, 1.0f, throughput, radiance);
              
-             // If training, this is a target value!
-             if (isTrainingRay && trainingVertexFound)
-             {
-                 // Add this radiance to the target?
-                 // Training logic is complex: it needs the suffix radiance.
-                 // For now, let's just assume we train on the LAST bounce?
-             }
+
              break;
         }
         else
@@ -166,6 +154,11 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                     UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
                 }
 
+                // Capture state before pathHit modifies it
+                float3 preRadiance = radiance;
+                float3 preThroughput = throughput;
+                float3 preRayDir = ray.direction; 
+
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
                 {
@@ -180,24 +173,24 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                     if(isTrainingRay)
                     {
 
-                        if(!trainingVertexFound)
+                        if(trainingVertexCount < MAX_TRAINING_VERTICES)
                         {
-
-                            trainingSample.pos = float4(iData.position, 0.f);
-                            trainingSample.dir = float4(ray.direction, 0.f);
-                            trainingSample.normal = float4(iData.normal, 0.f);
-                            trainingSample.roughness = 0.5f;
-                            // Use dummy values or actual material props if desired for training input? 
-                            // For now keeping it simple as before, but using the struct fields.
-                            trainingSample.albedo = float4(0,0,0,0); 
-                            trainingSample.pixel_coord = pixelCoord;
-                            trainingSample.throughput = float4(throughput, 0.f);
-                            trainingVertexFound = true;
-                            radianceAtCachePoint = radiance;
-                            throughputAtCachePoint = throughput;
-                            currentAreaSpread = 0;  
+                            InferenceQuery q;
+                            q.pos = float4(iData.position, 0.f);
+                            q.dir = float4(preRayDir, 0.f);
+                            q.normal = float4(iData.normal, 0.f);
+                            q.roughness = evalMaterial.roughness;
+                            q.albedo = float4(0,0,0,0); 
+                            q.pixel_coord = pixelCoord;
+                            q.throughput = float4(preThroughput, 0.f);
+                            // Store current accumulated radiance as temporary prefix
+                            q.target_radiance = float4(preRadiance, 0.f);
+                            
+                            trainingVertices[trainingVertexCount] = q;
+                            trainingVertexCount++;
+                            
+                            currentAreaSpread = 0;  // Reset spread to find next vertex
                         }
-                        else break;
                     }
                     else
                     {
@@ -226,24 +219,26 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     
     //radiance = 0.0f.xxx;
     // If we finished a training ray, emit sample
-    if (isTrainingRay && trainingVertexFound)
+    // Emit all training samples
+    if (isTrainingRay && trainingVertexCount > 0)
     {
-
-        //break;
-        uint sampleIdx;
-        // Limit to a reasonable batch size (e.g. 4096) to prevent overflow/TDR
-        // Also checks against buffer size.
-        InterlockedAdd(g_Counters[1], 1, sampleIdx);
-        if (sampleIdx < 20736) 
+        for (uint i = 0; i < trainingVertexCount; ++i)
         {
-            //radiance = float3(1.0f, 0.0f, 0.0f);
-             //what we are doing here is isolating the suffix radiance from the prefix radiance.
-             //We do this by subtracting the radiance at the cache point from the final radiance.
-             //Then we divide by the throughput at the cache point to get the raw suffix radiance.
-            trainingSample.target_radiance.xyzw = float4((radiance - radianceAtCachePoint) / max(throughputAtCachePoint, 1e-6f), 1.0f);
-            g_TrainingSamples_RT[sampleIdx] = trainingSample;
+            uint sampleIdx;
+            InterlockedAdd(g_Counters[1], 1, sampleIdx);
+            
+            if (sampleIdx < 20736) 
+            {
+                // Retrieve stored prefix radiance and throughput
+                float3 prefixRadiance = trainingVertices[i].target_radiance.xyz;
+                float3 vertexThroughput = trainingVertices[i].throughput.xyz;
 
-            //radiance  = 0.0f.xxx;
+                // Calculate suffix radiance: (Final - Prefix) / Throughput
+                float3 suffixRadiance = (radiance - prefixRadiance) / max(vertexThroughput, 1e-6f);
+                
+                trainingVertices[i].target_radiance = float4(suffixRadiance, 1.0f);
+                g_TrainingSamples_RT[sampleIdx] = trainingVertices[i];
+            }
         }
     }
 }
