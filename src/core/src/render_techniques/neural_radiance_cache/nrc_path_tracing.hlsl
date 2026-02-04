@@ -154,11 +154,6 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                     UpdatePathSpread(currentAreaSpread, distToNextHit, samplePDF, cosThetaAtNextHit);
                 }
 
-                // Capture state before pathHit modifies it
-                float3 preRadiance = radiance;
-                float3 preThroughput = throughput;
-                float3 preRayDir = ray.direction; 
-
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
                 {
@@ -177,14 +172,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         {
                             InferenceQuery q;
                             q.pos = float4(iData.position, 0.f);
-                            q.dir = float4(preRayDir, 0.f);
+                            q.dir = float4(ray.direction, 0.f);
                             q.normal = float4(iData.normal, 0.f);
                             q.roughness = evalMaterial.roughness;
-                            q.albedo = float4(0,0,0,0); 
+                            q.albedo = float4(evalMaterial.albedo, 0.f); 
                             q.pixel_coord = pixelCoord;
-                            q.throughput = float4(preThroughput, 0.f);
+                            q.throughput = float4(throughput, 0.f);
                             // Store current accumulated radiance as temporary prefix
-                            q.target_radiance = float4(preRadiance, 0.f);
+                            q.target_radiance = float4(radiance, 0.f);
                             
                             trainingVertices[trainingVertexCount] = q;
                             trainingVertexCount++;
