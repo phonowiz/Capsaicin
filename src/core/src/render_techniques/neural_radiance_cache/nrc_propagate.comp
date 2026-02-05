@@ -1,0 +1,65 @@
+/**********************************************************************
+Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+********************************************************************/
+
+#include "nrc_common.hlsl"
+
+#define MAX_TRAINING_VERTICES 12
+#define MAX_TRAINING_PATHS 4096
+
+ConstantBuffer<NRCConstants> g_NRCConstants : register(b0);
+
+RWStructuredBuffer<InferenceQuery> g_TrainingSamplesUAV : register(u0); // Training Samples (Read/Write)
+StructuredBuffer<float4> g_TrainingPredictions : register(t1); // Network Predictions (Read Only)
+StructuredBuffer<uint> g_Counters : register(t2); // [1] is sample count
+
+[numthreads(64, 1, 1)]
+void NRCPropagate(uint3 dtid : SV_DispatchThreadID)
+{
+    uint pathIdx = dtid.x;
+    
+    // Check if path is valid
+    // g_Counters[1] counts samples (e.g. 12 * num_paths).
+    // so we verify pathIdx against (count / 12).
+    if (pathIdx >= (g_Counters[1] / MAX_TRAINING_VERTICES) || pathIdx >= MAX_TRAINING_PATHS)
+        return;
+        
+    uint startIdx = pathIdx * MAX_TRAINING_VERTICES;
+    
+    // 1. Find the tail vertex (last valid vertex)
+    int tailVertexIdx = -1;
+    for (int i = 0; i < MAX_TRAINING_VERTICES; ++i)
+    {
+        uint idx = startIdx + i;
+        float tp = max(g_TrainingSamplesUAV[idx].throughput.x, max(g_TrainingSamplesUAV[idx].throughput.y, g_TrainingSamplesUAV[idx].throughput.z));
+        // Check explicit valid flag (frame w component)
+        if (g_TrainingSamplesUAV[idx].target_radiance.w <= 0.5f) 
+        {
+             // If this sample is invalid, earlier ones might still be valid?
+             // No, path samples are contiguous. If this is invalid, we hit end of path.
+             break;
+        }
+        tailVertexIdx = i;
+    }
+    
+    if (tailVertexIdx == -1)
+        return;
+        
+    // 2. Get Tail Prediction (Recall)
+    uint globalTailIdx = startIdx + tailVertexIdx;
+    float3 L_tail_pred = g_TrainingPredictions[globalTailIdx].rgb;
+    float3 T_tail = g_TrainingSamplesUAV[globalTailIdx].throughput.rgb;
+    
+    float3 Recall = L_tail_pred * T_tail;
+    
+    // 3. Propagate to all vertices in path
+    for (int j = 0; j <= tailVertexIdx; ++j)
+    {
+        uint idx = startIdx + j;
+        float3 T_j = g_TrainingSamplesUAV[idx].throughput.rgb;
+        
+        float3 correction = Recall / max(T_j, 1e-6f);
+        
+        g_TrainingSamplesUAV[idx].target_radiance.rgb += correction;
+    }
+}

@@ -36,7 +36,7 @@ struct InferenceQuery
     float4 albedo;
     float4 throughput;
     float4 target_radiance;
-    uint2  pixel_coord;
+    int2  pixel_coord;
     float  roughness;
 };
 

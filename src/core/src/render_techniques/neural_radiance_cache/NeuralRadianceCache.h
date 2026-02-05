@@ -78,7 +78,7 @@ private:
     GfxKernel  adam_kernel_;
     GfxKernel  update_weights_kernel_; // Optional if integrated into train
 
-    GfxTexture output_texture_; // Stores NRC inference result
+    //GfxTexture output_texture_; // Stores NRC inference result
     GfxBuffer  counters_buffer_; // [0] = Query Count, [1] = Sample Count
 
     // Compute Checks

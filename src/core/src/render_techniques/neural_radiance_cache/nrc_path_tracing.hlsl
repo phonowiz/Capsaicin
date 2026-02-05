@@ -84,63 +84,67 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     float samplePDF = 1.0f;
     float primaryArea = 0.0f;
     float currentAreaSpread = 0.0f;
+
+    // enum TerminateType
+    // {
+    //     kMiss,
+    //     kMaxBounces,
+    //     kThreshold
+    // };
+    //TerminateType terminateType = kMiss;
+
+    InferenceQuery q;
+    q.pixel_coord = -1;
     // Standard Path Tracing Loop
     for (uint bounce = currentBounce; bounce <= maxBounces; ++bounce)
     {
         // Check for NRC Inference Termination
-        if (!isTrainingRay && bounce == kNRCBounce)
-        {
-            // Terminate and Emit Query
-            uint queryIdx;
-            InterlockedAdd(g_Counters[0], 1, queryIdx); // Atomic counter
-            
-            if (queryIdx < 1920*1080) // Safety
-            {
-                InferenceQuery q;
-                q.pos = float4(ray.origin, 0.f);
-                q.dir = float4(ray.direction, 0.f);
-                q.normal = float4(normal, 0.f); // Approx
-                q.roughness = 0.5f; // Placeholder
-                q.albedo = float4(1,1,1,0); // Used for factorization in kernel (simplified)
-                q.pixel_coord = pixelCoord;
-                q.throughput = float4(throughput, 0.f); // STORE THROUGHPUT
-                q.target_radiance = 0.0f.xxxx;
-                g_InferenceQueries_RT[queryIdx] = q;
-            }
-            break; // Stop tracing
-        }
+
         
         // Trace Ray
         #if USE_INLINE_RT
         ClosestRayQuery rayQuery = TraceRay<ClosestRayQuery>(ray);
         if (rayQuery.CommittedStatus() == COMMITTED_NOTHING)
         {
-             // Miss
-             shadePathMiss(ray, bounce, randomNG, normal, 1.0f, throughput, radiance);
-             
+            // Miss
+            shadePathMiss(ray, bounce, randomNG, normal, 1.0f, throughput, radiance);
+            //terminateType = kMiss;
 
-             break;
+
+            if (!isTrainingRay && any(q.pixel_coord != -1))
+            {
+                // Terminate and Emit Query
+                uint queryIdx;
+                InterlockedAdd(g_Counters[0], 1, queryIdx); 
+                
+                if (queryIdx < 1920*1080) 
+                {
+                    g_InferenceQueries_RT[queryIdx] = q;
+                }
+            }
+            else
+                g_OutputBuffer[pixelCoord] = float4(radiance, 1.0f);
+            break;
         }
         else
         {
-             // Hit
-             HitInfo hitData = GetHitInfoRtInlineCommitted(rayQuery);
-             IntersectData iData = MakeIntersectData(hitData);
-             
-            //  // If training ray, and we are at the "Cache point" (bounce kNRCBounce), record inputs
-            //  if (isTrainingRay && bounce == kNRCBounce)
-            //  {
-            //      trainingSample.pos = iData.position;
-            //      trainingSample.dir = ray.direction;
-            //      trainingSample.normal = iData.normal;
-            //      trainingSample.roughness = 0.5f;
-            //      trainingVertexFound = true;
-            //      radianceAtCachePoint = radiance;
-            //      throughputAtCachePoint = throughput;
-            //      // We continue tracing to gather the "Target Radiance"
-            //  }
+            // Hit
+            HitInfo hitData = GetHitInfoRtInlineCommitted(rayQuery);
+            IntersectData iData = MakeIntersectData(hitData);
 
-            //  else
+            Material material = iData.material;
+            MaterialEvaluated evalMaterial = MakeMaterialEvaluated(material, iData.uv);
+
+            q.pos = float4(iData.position, 0.f);
+            q.dir = float4(ray.direction, 0.f);
+            q.normal = float4(iData.normal, 0.f);
+            q.roughness = evalMaterial.roughness;
+            q.albedo = float4(evalMaterial.albedo, 1.f); 
+            q.pixel_coord = pixelCoord;
+            q.throughput = float4(throughput, 0.f);
+            // Store current accumulated radiance as temporary prefix
+            q.target_radiance = float4(radiance, 1.f);
+             
             {
                 float distToNextHit = length(iData.position - ray.origin);
                 float cosThetaAtNextHit = abs(dot(iData.normal, ray.direction));
@@ -157,34 +161,46 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
                 {
+                    if (!isTrainingRay && any(q.pixel_coord != -1))
+                    {
+                        // Terminate and Emit Query
+                        uint queryIdx;
+                        InterlockedAdd(g_Counters[0], 1, queryIdx); 
+                        
+                        if (queryIdx < 1920*1080) 
+                        {
+                            g_InferenceQueries_RT[queryIdx] = q;
+                        }
+                    }
                     break;
                 }
-
-                if ((currentAreaSpread * currentAreaSpread) > 0.01f * primaryArea)
+                
+                if ((currentAreaSpread * currentAreaSpread) > 0.01f * primaryArea || bounce == maxBounces)
                 {
-                    Material material = iData.material;
-                    MaterialEvaluated evalMaterial = MakeMaterialEvaluated(material, iData.uv);
+                    //terminateType = kThreshold;
+                    // Check for NRC Inference Termination (moved to Hit)
+                    if (!isTrainingRay && (bounce == kNRCBounce || bounce == maxBounces))
+                    {
+                        // Terminate and Emit Query
+                        uint queryIdx;
+                        InterlockedAdd(g_Counters[0], 1, queryIdx); 
+                        
+                        if (queryIdx < 1920*1080) 
+                        {
+                            g_InferenceQueries_RT[queryIdx] = q;
+                        }
+                        break; // Stop tracing
+                    }
 
                     if(isTrainingRay)
                     {
-
                         if(trainingVertexCount < MAX_TRAINING_VERTICES)
                         {
-                            InferenceQuery q;
-                            q.pos = float4(iData.position, 0.f);
-                            q.dir = float4(ray.direction, 0.f);
-                            q.normal = float4(iData.normal, 0.f);
-                            q.roughness = evalMaterial.roughness;
-                            q.albedo = float4(evalMaterial.albedo, 0.f); 
-                            q.pixel_coord = pixelCoord;
-                            q.throughput = float4(throughput, 0.f);
-                            // Store current accumulated radiance as temporary prefix
-                            q.target_radiance = float4(radiance, 0.f);
-                            
                             trainingVertices[trainingVertexCount] = q;
                             trainingVertexCount++;
                             
-                            currentAreaSpread = 0;  // Reset spread to find next vertex
+                            if(trainingVertexCount == 2)
+                                currentAreaSpread = 0;  // reset spread for tail section of path trace
                         }
                     }
                     else
@@ -193,15 +209,6 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         InterlockedAdd(g_Counters[0], 1, queryIdx);
                         if (queryIdx < 1920*1080) // Safety
                         {
-                            InferenceQuery q;
-                            q.pos = float4(iData.position, 0.f);
-                            q.dir = float4(ray.direction, 0.f);
-                            q.normal = float4(iData.normal, 0.f);
-                            q.roughness = evalMaterial.roughness;
-                            q.albedo = float4(evalMaterial.albedo, 0.f);
-                            q.pixel_coord = pixelCoord;
-                            q.throughput = float4(throughput, 0.f);
-                            q.target_radiance = 0.0f.xxxx;
                             g_InferenceQueries_RT[queryIdx] = q;
                         }
                         break;
@@ -210,7 +217,8 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             }
         }
         #endif
-    }
+    }  
+    
     
     //radiance = 0.0f.xxx;
     // If we finished a training ray, emit sample

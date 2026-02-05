@@ -33,8 +33,8 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     const uint global_pixel_idx = dtid.x;
 
     uint count = g_Counters[g_NRCConstants.is_training_pass];
-    if (global_pixel_idx >= count)
-        return;
+    // if (global_pixel_idx >= count)
+    //     return;
 
     InferenceQuery query = g_InferenceQueries[global_pixel_idx];
     
@@ -128,5 +128,5 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     // Reconstruct final pixel value
     float3 final_radiance = direct_radiance + l_indirect;
     
-    g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
+    g_OutputTexture[query.pixel_coord] = float4(20.0f, 20.0f, 20.0f, 1.0f);
 }
