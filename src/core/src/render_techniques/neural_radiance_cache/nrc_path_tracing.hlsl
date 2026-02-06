@@ -98,9 +98,6 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     // Standard Path Tracing Loop
     for (uint bounce = currentBounce; bounce <= maxBounces; ++bounce)
     {
-        // Check for NRC Inference Termination
-
-        
         // Trace Ray
         #if USE_INLINE_RT
         ClosestRayQuery rayQuery = TraceRay<ClosestRayQuery>(ray);
@@ -122,8 +119,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                     g_InferenceQueries_RT[queryIdx] = q;
                 }
             }
-            else
-                g_OutputBuffer[pixelCoord] = float4(radiance, 1.0f);
+
             break;
         }
         else

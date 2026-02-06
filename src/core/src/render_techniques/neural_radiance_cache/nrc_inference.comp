@@ -126,7 +126,7 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     float3 direct_radiance = g_OutputTexture[query.pixel_coord].rgb;
     
     // Reconstruct final pixel value
-    float3 final_radiance = direct_radiance + l_indirect;
+    float3 final_radiance = l_indirect + direct_radiance;
     
-    g_OutputTexture[query.pixel_coord] = float4(20.0f, 20.0f, 20.0f, 1.0f);
+    g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
 }
