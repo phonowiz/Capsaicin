@@ -65,6 +65,7 @@ float getPrimaryAreaSpread(
 
 
 #define MAX_TRAINING_VERTICES 12
+#define MAX_TRAINING_PATHS 4096
 
 template<typename RadianceT>
 void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout Random randomNG,
@@ -108,7 +109,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
             //terminateType = kMiss;
 
 
-            if (!isTrainingRay && any(q.pixel_coord != -1))
+            if (any(q.pixel_coord != -1))
             {
                 // Terminate and Emit Query
                 uint queryIdx;
@@ -117,6 +118,15 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 if (queryIdx < 1920*1080) 
                 {
                     g_InferenceQueries_RT[queryIdx] = q;
+                }
+
+                if(isTrainingRay)
+                {
+                    if(trainingVertexCount < MAX_TRAINING_VERTICES)
+                    {
+                        trainingVertices[trainingVertexCount] = q;
+                        trainingVertexCount++;
+                    }
                 }
             }
 
@@ -157,7 +167,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 if (!pathHit(ray, hitData, iData, randomStratified, randomNG,
                     bounce, minBounces, maxBounces, normal, samplePDF, throughput, radiance))
                 {
-                    if (!isTrainingRay && any(q.pixel_coord != -1))
+                    if (any(q.pixel_coord != -1))
                     {
                         // Terminate and Emit Query
                         uint queryIdx;
@@ -175,7 +185,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                 {
                     //terminateType = kThreshold;
                     // Check for NRC Inference Termination (moved to Hit)
-                    if (!isTrainingRay && (bounce == kNRCBounce || bounce == maxBounces))
+                    //if ((bounce == kNRCBounce || bounce == maxBounces))
                     {
                         // Terminate and Emit Query
                         uint queryIdx;
@@ -185,7 +195,7 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                         {
                             g_InferenceQueries_RT[queryIdx] = q;
                         }
-                        break; // Stop tracing
+                        //break; // Stop tracing
                     }
 
                     if(isTrainingRay)
@@ -199,14 +209,14 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
                                 currentAreaSpread = 0;  // reset spread for tail section of path trace
                         }
                     }
-                    else
+                    // else
                     {
-                        uint queryIdx;
-                        InterlockedAdd(g_Counters[0], 1, queryIdx);
-                        if (queryIdx < 1920*1080) // Safety
-                        {
-                            g_InferenceQueries_RT[queryIdx] = q;
-                        }
+                        // uint queryIdx;
+                        // InterlockedAdd(g_Counters[0], 1, queryIdx);
+                        // if (queryIdx < 1920*1080) // Safety
+                        // {
+                        //     g_InferenceQueries_RT[queryIdx] = q;
+                        // }
                         break;
                     }
                 }
@@ -221,22 +231,29 @@ void tracePathNRC(RayInfo ray, inout StratifiedSampler randomStratified, inout R
     // Emit all training samples
     if (isTrainingRay && trainingVertexCount > 0)
     {
-        for (uint i = 0; i < trainingVertexCount; ++i)
+        // Allocate a PATH index by reserving a block of samples (stride)
+        uint baseSampleIdx;
+        InterlockedAdd(g_Counters[1], MAX_TRAINING_VERTICES, baseSampleIdx);
+        uint pathIdx = baseSampleIdx / MAX_TRAINING_VERTICES;
+        
+        if (pathIdx < MAX_TRAINING_PATHS) 
         {
-            uint sampleIdx;
-            InterlockedAdd(g_Counters[1], 1, sampleIdx);
+            uint startIdx = pathIdx * MAX_TRAINING_VERTICES;
             
-            if (sampleIdx < 20736) 
+            for (uint i = 0; i < trainingVertexCount; ++i)
             {
                 // Retrieve stored prefix radiance and throughput
                 float3 prefixRadiance = trainingVertices[i].target_radiance.xyz;
                 float3 vertexThroughput = trainingVertices[i].throughput.xyz;
 
                 // Calculate suffix radiance: (Final - Prefix) / Throughput
+                // This is the "Monte Carlo" target from the path tracer.
                 float3 suffixRadiance = (radiance - prefixRadiance) / max(vertexThroughput, 1e-6f);
                 
                 trainingVertices[i].target_radiance = float4(suffixRadiance, 1.0f);
-                g_TrainingSamples_RT[sampleIdx] = trainingVertices[i];
+                
+                // Write to contiguous block
+                g_TrainingSamples_RT[startIdx + i] = trainingVertices[i];
             }
         }
     }

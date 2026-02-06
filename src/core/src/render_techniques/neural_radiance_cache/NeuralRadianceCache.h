@@ -64,18 +64,22 @@ private:
     GfxBuffer inference_queries_;
     GfxBuffer training_samples_;
     GfxBuffer constants_buffer_;
+    GfxBuffer training_constants_buffer_;
     GfxBuffer activations_buffer_;
     GfxBuffer incoming_gradients_;
     GfxBuffer adam_constants_buffer_;
+    GfxBuffer training_predictions_;
 
     GfxProgram nrc_inference_program_;
     GfxProgram nrc_train_program_;
     GfxProgram nrc_loss_program_;
     GfxProgram nrc_adam_program_;
+    GfxProgram nrc_propagate_program_;
     GfxKernel  inference_kernel_;
     GfxKernel  train_kernel_;
     GfxKernel  nrc_loss_kernel_;
     GfxKernel  adam_kernel_;
+    GfxKernel  propagate_kernel_;
     GfxKernel  update_weights_kernel_; // Optional if integrated into train
 
     //GfxTexture output_texture_; // Stores NRC inference result

@@ -34,6 +34,18 @@ void NRCLoss(uint3 dtid : SV_DispatchThreadID)
     InferenceQuery sample = g_TrainingSamples[global_sample_idx];
     float3 target_radiance = sample.target_radiance.rgb;
 
+    // Check validity
+    if (sample.target_radiance.w <= 0.001f)
+    {
+        // Zero out gradients for this invalid/padding sample
+        uint base_grad_idx = global_sample_idx * LAYER_WIDTH_HALVES;
+        for (int i = 0; i < LAYER_WIDTH_HALVES; i++)
+        {
+            g_IncomingGradients[base_grad_idx + i] = (float16_t2)0;
+        }
+        return;
+    }
+
     // 2. Get Network Prediction (from the last layer of the forward pass)
     // In our 64-wide net, the RGB results are usually the first 3 neurons
     // of the final layer (Layer 7).

@@ -21,6 +21,7 @@ StructuredBuffer<uint> g_Counters : register(t3);
 // UAVs
 RWTexture2D<float4> g_OutputTexture : register(u1);
 RWStructuredBuffer<float16_t2> g_Activations : register(u2);
+RWStructuredBuffer<float4> g_TrainingPredictions : register(u3);
 
 groupshared float16_t2 s_activations[LAYER_WIDTH_HALVES][BLOCK_PIXELS];
 groupshared float16_t2 s_weights[LAYER_WIDTH_HALVES * 64];
@@ -122,11 +123,21 @@ void NRCInference(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadI
     // L_total = L_direct + Throughput * (Albedo * Pred)
     float3 l_indirect = (radiance_pred * query.albedo.rgb);// * query.throughput.rgb;
     
-    // Read previous direct/short-path radiance from the output texture
-    float3 direct_radiance = g_OutputTexture[query.pixel_coord].rgb;
-    
-    // Reconstruct final pixel value
-    float3 final_radiance = l_indirect + direct_radiance;
-    
-    g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
+
+    if (g_NRCConstants.is_training_pass)
+    {
+        // Store the predicted radiance for the Propagation Pass.
+        g_TrainingPredictions[global_pixel_idx] = float4(l_indirect, 1.0f);
+        //g_OutputTexture[query.pixel_coord] = float4(100.f, 0.f, 100.f, 1.0f);
+    }
+    else
+    {
+        // Read previous direct/short-path radiance from the output texture
+        float3 direct_radiance = g_OutputTexture[query.pixel_coord].rgb;
+        
+        // Reconstruct final pixel value
+        float3 final_radiance = direct_radiance + l_indirect;
+        
+        g_OutputTexture[query.pixel_coord] = float4(final_radiance, 1.0f);
+    }
 }
