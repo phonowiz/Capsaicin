@@ -338,16 +338,16 @@ void NeuralRadianceCache::render(CapsaicinInternal &capsaicin) noexcept
        gfxCommandBindKernel(gfx_, inference_kernel_);
        gfxCommandDispatch(gfx_, num_groups_train_infer, 1, 1);
 
-       //// 2.6 Propagate Pass
-       // gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_NRCConstants", constants_buffer_);
-       // gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_TrainingSamplesUAV", training_samples_);
-       // gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_TrainingPredictions", training_predictions_);
-       // gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_Counters", counters_buffer_);
+       // 2.6 Propagate Pass
+        gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_NRCConstants", constants_buffer_);
+        gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_TrainingSamplesUAV", training_samples_);
+        gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_TrainingPredictions", training_predictions_);
+        gfxProgramSetParameter(gfx_, nrc_propagate_program_, "g_Counters", counters_buffer_);
 
-       // uint32_t num_paths = 4096;
-       // uint32_t num_groups_prop = (num_paths + 63) / 64; 
-       // gfxCommandBindKernel(gfx_, propagate_kernel_);
-       // gfxCommandDispatch(gfx_, num_groups_prop, 1, 1);
+        uint32_t num_paths = 4096;
+        uint32_t num_groups_prop = (num_paths + 63) / 64; 
+        gfxCommandBindKernel(gfx_, propagate_kernel_);
+        gfxCommandDispatch(gfx_, num_groups_prop, 1, 1);
     }
 
     //// 2.5 Dispatch Loss
